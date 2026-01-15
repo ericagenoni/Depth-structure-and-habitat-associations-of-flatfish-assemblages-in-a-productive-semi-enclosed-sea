@@ -1,0 +1,84 @@
+############################################
+# FRAMEWORK A
+# Goal:
+# 1) Aggregate hauls by (year, stratum, species) and compute mean abundance
+# 2) Export results to the existing Excel file as a new worksheet
+# 3) Build a community matrix: rows = (year, stratum), columns = species
+# 4) Apply transformations and compute Bray-Curtis dissimilarity
+############################################
+
+library(dplyr)
+library(tidyr)
+library(vegan)
+library(ggplot2)
+library(openxlsx2)
+
+############################################
+# 1) Aggregate hauls (year x stratum x species)
+############################################
+df_framework_A <- df_pulito %>%
+  group_by(YEAR, Strato, SPECIES) %>%
+  summarise(
+    mean_weight = mean(TOTAL_WEIGHT_IN_THE_HAUL, na.rm = TRUE),
+    mean_number = mean(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    n_hauls     = n(),      # number of hauls contributing to this cell
+    .groups     = "drop"
+  ) %>%
+  # Build a combined ID for convenience (e.g., "1996_21101")
+  mutate(year_depth_id = paste(YEAR, Strato, sep = "_")) %>%
+  arrange(YEAR, Strato, SPECIES)
+
+############################################
+# 2) Write to Excel (append as new worksheet)
+############################################
+wb <- wb_load(xlsx_path)
+
+# Safer: avoid errors if the sheet already exists
+existing_sheets <- wb$sheet_names
+if ("framework_A" %in% existing_sheets) {
+  wb$remove_worksheet("framework_A")
+}
+
+wb$add_worksheet("framework_A")
+wb$add_data("framework_A", df_framework_A)
+wb$save(xlsx_path)
+
+# Inspect output table
+df_framework_A
+
+############################################
+# 3) Build the community matrix:
+#    rows = (year, stratum), columns = species
+#    values = mean_number 
+############################################
+mat_num <- df_framework_A %>%
+  select(YEAR, Strato, SPECIES, mean_number) %>%
+  pivot_wider(
+    names_from  = SPECIES,
+    values_from = mean_number,
+    values_fill = 0
+  )
+
+# Keep row metadata (YEAR, Strato)
+metadata <- mat_num %>% select(YEAR, Strato)
+
+# Species-only matrix (numeric)
+mat <- mat_num %>% select(-YEAR, -Strato)
+
+############################################
+# 4) Transformations
+############################################
+# Fourth-root transform (downweights dominant species)
+mat_sqrt4 <- mat^(1/4)
+
+# 0–1 standardization per species (column-wise range standardization)
+# Note: species with zero variance (all zeros) can produce NaN; see improvements below
+mat_std <- decostand(mat_sqrt4, method = "range")
+
+############################################
+# 5) Bray-Curtis dissimilarity
+############################################
+bray <- vegdist(mat_std, method = "bray")
+
+# bray is a 'dist' object
+bray
