@@ -1,0 +1,141 @@
+# Depth-structure-and-habitat-associations-of-flatfish-assemblages-in-a-productive-semi-enclosed-sea
+############################################
+# Packages
+############################################
+library(readxl)   # read Excel files
+library(dplyr)    # data manipulation
+library(ggplot2)  # plotting
+
+############################################
+# File path
+############################################
+xlsx_path <- "C:/FISHMED_MEDITS/PaPeR/MEDITS_1994_2024_joined.xlsx"
+
+############################################
+# 1) Inspect available sheets and read data
+############################################
+sheets <- excel_sheets(xlsx_path)
+print(sheets)
+
+# working on sheets 1
+sheet_name <- sheets[1]
+df <- read_excel(xlsx_path, sheet = sheet_name)
+
+# Check column names
+print(names(df))
+
+############################################
+# 2) Quick overview of species and years
+############################################
+species_unique <- sort(unique(na.omit(df$SPECIES)))
+print(species_unique)
+print(length(species_unique))  # number of unique species
+
+years_unique <- sort(unique(na.omit(df$YEAR)))
+print(years_unique)
+
+############################################
+# 3) Filter out unwanted years
+############################################
+years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2014, 2017)
+
+df_year_filtered <- df %>%
+  filter(!YEAR %in% years_to_drop)
+
+years_unique_filtered <- sort(unique(df_year_filtered$YEAR))
+print(years_unique_filtered)
+
+############################################
+# 4) Frequency of occurrence per species
+#    (presence in the time series)
+#
+# Definition used here:
+# A species is "present" in a given year if
+# TOTAL_NUMBER_IN_THE_HAUL*species is not NA and > 0 at least once in that year.
+############################################
+n_years_total <- n_distinct(df_year_filtered$YEAR)
+
+freq_species <- df_year_filtered %>%
+  group_by(SPECIES) %>%
+  summarise(
+    years_present = n_distinct(
+      YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) & TOTAL_NUMBER_IN_THE_HAUL > 0]
+    ),
+    freq_percent = 100 * years_present / n_years_total,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
+
+
+# Print (first 40 rows)
+print(freq_species, n = 40)
+
+############################################
+# 5) Plot frequency of occurrence
+############################################
+freq_species <- freq_species %>%
+  mutate(SPECIES = factor(SPECIES, levels = SPECIES[order(freq_percent, decreasing = TRUE)]))
+
+ggplot(freq_species, aes(x = SPECIES, y = freq_percent)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = "Species",
+    y = "Presence in time series (%)",
+    title = "Frequency of occurrence per species"
+  ) +
+  theme_bw() +
+  geom_hline(yintercept = 50, linetype = "dashed", colour = "red")
+
+# Print full table
+print(freq_species, n = nrow(freq_species))
+
+############################################
+# 6) Remove aggregated / non-target codes
+############################################
+species_to_drop <- c("LAS", "SPP", "ACU", "IMP", "POD", "TEN", "TYP", "OCE")
+
+df_clean <- df_year_filtered %>%
+  filter(!SPECIES %in% species_to_drop)
+
+freq_species_clean <- freq_species %>%
+  filter(!SPECIES %in% species_to_drop)
+
+print(freq_species_clean, n = nrow(freq_species_clean))
+
+############################################
+# 7) Remove Strato == 21110 and inspect what was removed
+############################################
+# How many rows belonged to Strato == 21110 (before removal)?
+n_21110 <- df_year_filtered %>%
+  filter(Strato == 21110) %>%
+  nrow()
+
+print(n_21110)
+
+# Species composition within Strato == 21110 (before removal)
+df_year_filtered %>%
+  filter(Strato == 21110) %>%
+  count(SPECIES, sort = TRUE) %>%
+  print(n = Inf)
+  
+df_clean <- df_clean %>%
+  filter(Strato != 21110)
+
+# Final number of rows
+print(nrow(df_clean))
+
+# 4) Frequency of occurrence per species in df_pulito
+
+n_years_total <- n_distinct(df_pulito$YEAR)
+
+freq_species2 <- df_pulito %>%
+  group_by(SPECIES) %>%
+  summarise(
+    years_present = n_distinct(
+      YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) & TOTAL_NUMBER_IN_THE_HAUL > 0]
+    ),
+    freq_percent = 100 * years_present / n_years_total,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
