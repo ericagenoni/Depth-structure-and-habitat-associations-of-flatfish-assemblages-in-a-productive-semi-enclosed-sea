@@ -1,0 +1,203 @@
+############################################
+# ENVFIT (species vectors) over PCoA + figure assembly + Indicator Species Analysis
+# Inputs assumed to exist in the workspace:
+# - pcoa_res: result from cmdscale() (with $points)
+# - pcoa_df : data.frame with PCoA1, PCoA2, and Strato (used for plotting limits)
+# - p_pcoa  : ggplot object of the base PCoA (points/ellipses by Strato)
+# - mat_std : standardized/transformed community matrix (rows match pcoa_res$points)
+# - metadata: data.frame with Strato (rows match bray / ordination rows)
+############################################
+
+#############################
+# ENVFIT: species vectors on PCoA
+#############################
+library(vegan)
+library(ggrepel)
+library(grid)
+
+# 1) Fit species vectors onto the PCoA ordination space
+# permutations = 0 means: no significance testing, just compute vector directions/strength
+ef_flat <- envfit(pcoa_res$points, mat_std, permutations = 0)
+
+# 2) Extract the (unscaled) species vectors (one vector per species, 2 coordinates here)
+vec <- scores(ef_flat, display = "vectors")  # matrix: n_species x 2
+if (is.null(vec) || nrow(vec) == 0) {
+  stop("envfit produced no vectors (check mat_std / matching rows).")
+}
+
+# 3) Compute a scaling factor so arrows fit nicely within the PCoA plot limits
+xlim_pcoa <- range(pcoa_df$PCoA1)
+ylim_pcoa <- range(pcoa_df$PCoA2)
+
+max_vec_x <- max(abs(vec[, 1]))
+max_vec_y <- max(abs(vec[, 2]))
+
+# Base scaling: make the longest arrow reach ~90% of the plot extent (in either axis)
+base_scale <- min(
+  0.9 * max(abs(xlim_pcoa)) / max_vec_x,
+  0.9 * max(abs(ylim_pcoa)) / max_vec_y
+)
+
+# Optional extra multiplier to lengthen arrows further (increase to 2, 2.5, etc. if desired)
+extra_scale <- 1.5
+arrow_mul <- base_scale * extra_scale
+
+# 4) Scale vectors into PCoA units
+vec_scaled <- vec * arrow_mul
+
+# 5) Build a tidy data.frame of arrow endpoints and a strength metric (r, often treated as R-like fit)
+# NOTE: vegan stores:
+# - ef_flat$vectors$arrows : the (unscaled) directions
+# - ef_flat$vectors$r      : vector fit strength (NOT the squared value)
+# - ef_flat$vectors$pvals  : p-values if permutations > 0
+arrows_df_full <- data.frame(
+  species = rownames(vec_scaled),
+  PCoA1   = vec_scaled[, 1],
+  PCoA2   = vec_scaled[, 2],
+  r2      = ef_flat$vectors$r
+)
+
+# Example check for a specific species code (optional diagnostic)
+arrows_df_full["LAT", ]
+arrows_df_full$r2["LAT"]
+
+# 6) Filter vectors by strength threshold (keep only the strongest species fits)
+arrows_df_filt <- arrows_df_full[arrows_df_full$r2 >= 0.48, ]
+arrows_df_filt
+
+# 7) Overlay arrows + labels on top of the base PCoA plot
+p_pcoa_envfit <- p_pcoa +
+  geom_segment(
+    data = arrows_df_filt,
+    aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
+    colour = "blue",
+    size   = 0.6,
+    arrow  = arrow(length = unit(0.25, "cm"), type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  geom_text_repel(
+    data = arrows_df_filt,
+    aes(x = PCoA1, y = PCoA2, label = species),
+    colour = "blue",
+    size = 3,
+    inherit.aes = FALSE,
+    box.padding   = 0.25,
+    point.padding = 0.1,
+    max.overlaps  = Inf
+  )
+
+p_pcoa_envfit
+
+# Save the labeled envfit plot
+out_dir <- "C:/FISHMED_MEDITS/PaPeR"
+ggsave(
+  filename = file.path(out_dir, "PCoA_framework_A_envfit_flatfish.png"),
+  plot = p_pcoa_envfit,
+  width = 7, height = 5, dpi = 300
+)
+
+# 8) Version without labels (arrows only)
+p_pcoa_envfit2 <- p_pcoa +
+  geom_segment(
+    data = arrows_df_filt,
+    aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
+    colour = "blue",
+    size   = 0.6,
+    arrow  = arrow(length = unit(0.25, "cm"), type = "closed"),
+    inherit.aes = FALSE
+  )
+
+p_pcoa_envfit2
+
+# Optional diagnostics about envfit internals and naming
+str(ef_flat$vectors)
+r2 <- ef_flat$vectors$r
+rownames(ef_flat$vectors$arrows)
+ef_flat$vectors$r["LAT"]
+rownames(vec)
+rownames(vec_scaled)
+# NOTE: 'arrows_df' is not defined in this script; you probably meant arrows_df_full or arrows_df_filt
+
+
+#############################
+# Multi-panel figure (A = base PCoA, B = PCoA + arrows) with a shared legend
+#############################
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+
+# Panel A: base PCoA (no legend)
+pA <- p_pcoa +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = -0.2)
+  ) +
+  ggtitle("A")
+
+# Panel B: PCoA + envfit arrows (no legend)
+pB <- p_pcoa_envfit2 +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = -0.2)
+  ) +
+  ggtitle("B")
+
+# Extract the legend (from the plot that contains it)
+g_legend <- cowplot::get_legend(
+  p_pcoa_envfit2 +
+    guides(shape = guide_legend(ncol = 1)) +
+    theme(legend.position = "right")
+)
+
+# Assemble a single horizontal layout: A | B | legend
+plot_joined <- (pA | pB | wrap_elements(g_legend)) +
+  plot_layout(widths = c(1, 1, 0.28))
+
+plot_joined
+
+# Save composite figure
+ggsave(
+  filename = "C:/FISHMED_MEDITS/PaPeR/PCoA_analysisa_plusenvfit_senzaetichette.png",
+  plot = plot_joined,
+  width = 14, height = 6, dpi = 300
+)
+
+
+#############################
+# ISA: Indicator Species Analysis (IndVal.g)
+#############################
+# install.packages("indicspecies")
+library(indicspecies)
+
+# Grouping factor: depth strata
+groups <- as.factor(metadata$Strato)
+
+# Community matrix choice:
+# Option A (commented): raw abundances (often a default choice)
+# comm <- mat
+# Option B (used here): transformed/standardized matrix to match PCoA/NMDS workflow
+comm <- mat_std
+
+# Run Indicator Species Analysis using generalized IndVal (IndVal.g)
+# 10,000 permutations for significance testing
+isa_res <- multipatt(
+  comm, groups,
+  func = "IndVal.g",
+  control = how(nperm = 10000)
+)
+
+# Print full results (including IndVal components)
+summary(isa_res, indvalcomp = TRUE)
+
+# Inspect object structure (useful for extracting tables programmatically)
+str(isa_res, max.level = 2)
+
+# Optional: repeat with more permutations for more stable p-values (50,000)
+isa_res50k <- multipatt(
+  comm, groups,
+  func = "IndVal.g",
+  control = how(nperm = 50000)
+)
+
+summary(isa_res50k, indvalcomp = TRUE)
+range(isa_res50k$sign$p.value)
