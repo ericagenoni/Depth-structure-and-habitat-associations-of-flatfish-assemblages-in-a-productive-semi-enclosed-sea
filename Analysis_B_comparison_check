@@ -1,0 +1,237 @@
+############################################################
+# COMPARISON CHECK — Framework B flatfish
+# ==========================================================
+# Goal:
+# Compare ordination results obtained from:
+#  (1) haul-level community matrix (each haul is a sample)
+#  (2) averaged community matrix (each YEAR × Strato is a sample)
+# using the same transformation + scaling pipeline and Bray–Curtis PCoA.
+# Then compare stratum centroids via Procrustes / PROTEST.
+############################################################
+
+# -------------------------
+# 0) Libraries and input
+# -------------------------
+library(readxl)   # read Excel
+library(dplyr)    # data manipulation
+library(tidyr)    # wide/long reshaping
+library(ggplot2)  # plotting
+library(vegan)    # vegdist, procrustes, protest
+
+# Excel file containing MEDITS joined data
+xlsx_path <- "C:/FISHMED_MEDITS/PaPeR/MEDITS_1994_2024_joined.xlsx"
+
+# Inspect sheets and read the first sheet by default
+sheets <- excel_sheets(xlsx_path)
+sheet_name <- sheets[1]
+df <- read_excel(xlsx_path, sheet = sheet_name)
+
+# Quick inspection (optional)
+names(df)
+
+# -------------------------
+# 1) Filtering: remove unwanted years, remove aggregated species codes,
+#    and exclude Strato == 21110 (same as your earlier cleaning)
+# -------------------------
+
+years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2014, 2017)
+
+df_filtered <- df %>%
+  filter(!YEAR %in% years_to_drop)
+
+species_to_drop <- c("LAS", "SPP", "ACU", "IMP", "POD", "TEN", "TYP", "OCE")
+
+df_clean <- df_filtered %>%
+  filter(!SPECIES %in% species_to_drop) %>%
+  filter(Strato != 21110)
+
+# -------------------------
+# 2) Restrict to the three “recent” years for the comparison
+# -------------------------
+years_recent <- c(2021, 2023, 2024)
+
+df3 <- df_clean %>%
+  filter(YEAR %in% years_recent) %>%
+  mutate(
+    # Unique haul identifier (YEAR + Strato + HAUL_NUMBER)
+    haul_id = paste(YEAR, Strato, HAUL_NUMBER, sep = "_")
+  )
+
+# -------------------------
+# 3) Build two community matrices
+#    A) Haul-level matrix: one row per haul_id
+#    B) Averaged matrix: one row per YEAR × Strato (mean across hauls)
+# -------------------------
+
+# A) Haul-level abundance matrix (wide: hauls x species)
+mat_haul <- df3 %>%
+  group_by(haul_id, Strato, YEAR, SPECIES) %>%
+  summarise(
+    ab = sum(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from  = SPECIES,
+    values_from = ab,
+    values_fill = 0
+  )
+
+# B) Averaged abundance by YEAR × Strato × SPECIES
+df_avg <- df3 %>%
+  group_by(YEAR, Strato, SPECIES) %>%
+  summarise(
+    ab = mean(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Wide averaged matrix (samples = YEAR × Strato)
+mat_avg <- df_avg %>%
+  mutate(sample_id = paste(YEAR, Strato, sep = "_")) %>%
+  select(sample_id, YEAR, Strato, SPECIES, ab) %>%
+  pivot_wider(
+    names_from  = SPECIES,
+    values_from = ab,
+    values_fill = 0
+  )
+
+# -------------------------
+# 4) Apply the same preprocessing to both matrices:
+#    - fourth-root transformation
+#    - 0–1 range scaling computed on the combined dataset (haul + avg)
+#      so that both are on the same scale
+# -------------------------
+
+# Helper transforms
+fourth_root <- function(x) x^(1/4)
+
+# Copies to transform
+mat_haul_tr <- mat_haul
+mat_avg_tr  <- mat_avg
+
+# Identify numeric (species) columns
+num_cols_haul <- setdiff(names(mat_haul_tr), c("haul_id", "Strato", "YEAR"))
+num_cols_avg  <- setdiff(names(mat_avg_tr),  c("sample_id", "YEAR", "Strato"))
+
+# Fourth-root transform
+mat_haul_tr[num_cols_haul] <- lapply(mat_haul_tr[num_cols_haul], fourth_root)
+mat_avg_tr[num_cols_avg]   <- lapply(mat_avg_tr[num_cols_avg], fourth_root)
+
+# Align the species sets (keep only shared species columns)
+species_all <- intersect(num_cols_haul, num_cols_avg)
+
+haul_X <- as.matrix(mat_haul_tr[, species_all])
+avg_X  <- as.matrix(mat_avg_tr[,  species_all])
+
+# Compute min/max for each species on the combined data (haul + avg)
+X_all <- rbind(haul_X, avg_X)
+minv <- apply(X_all, 2, min, na.rm = TRUE)
+maxv <- apply(X_all, 2, max, na.rm = TRUE)
+
+# Range scaling: (x - min) / (max - min)
+haul_std <- sweep(sweep(haul_X, 2, minv, "-"), 2, (maxv - minv), "/")
+avg_std  <- sweep(sweep(avg_X,  2, minv, "-"), 2, (maxv - minv), "/")
+
+# Replace non-finite values (division by zero) with 0
+haul_std[!is.finite(haul_std)] <- 0
+avg_std[!is.finite(avg_std)]   <- 0
+
+# -------------------------
+# 5) Bray–Curtis dissimilarities + PCoA (cmdscale) for each dataset
+# -------------------------
+d_haul <- vegdist(haul_std, method = "bray")
+d_avg  <- vegdist(avg_std,  method = "bray")
+
+pcoa_haul <- cmdscale(d_haul, k = 2, eig = TRUE)
+pcoa_avg  <- cmdscale(d_avg,  k = 2, eig = TRUE)
+
+# Percent variance explained (NOTE: Bray can produce negative eigenvalues)
+var_haul <- 100 * pcoa_haul$eig / sum(pcoa_haul$eig)
+var_avg  <- 100 * pcoa_avg$eig  / sum(pcoa_avg$eig)
+
+# -------------------------
+# 6) Build score tables + compute stratum centroids for each ordination
+# -------------------------
+
+scores_haul <- data.frame(
+  haul_id = mat_haul$haul_id,
+  Strato  = factor(mat_haul$Strato),
+  Axis1   = pcoa_haul$points[, 1],
+  Axis2   = pcoa_haul$points[, 2]
+)
+
+cent_haul <- scores_haul %>%
+  group_by(Strato) %>%
+  summarise(
+    Axis1 = mean(Axis1, na.rm = TRUE),
+    Axis2 = mean(Axis2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+scores_avg <- data.frame(
+  sample_id = mat_avg$sample_id,
+  Strato    = factor(mat_avg$Strato),
+  Axis1     = pcoa_avg$points[, 1],
+  Axis2     = pcoa_avg$points[, 2]
+)
+
+cent_avg <- scores_avg %>%
+  group_by(Strato) %>%
+  summarise(
+    Axis1 = mean(Axis1, na.rm = TRUE),
+    Axis2 = mean(Axis2, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# -------------------------
+# 7) Procrustes / PROTEST:
+# Compare the centroid configuration (haul-level vs averaged)
+# -------------------------
+# Ensure identical stratum order before comparison
+M1 <- as.matrix(cent_haul[order(cent_haul$Strato), c("Axis1", "Axis2")])
+M2 <- as.matrix(cent_avg[order(cent_avg$Strato),  c("Axis1", "Axis2")])
+
+# Procrustes rotation/scaling (symmetric = TRUE)
+proc <- procrustes(M1, M2, symmetric = TRUE)
+
+# Permutation test for the Procrustes fit
+prot <- protest(M1, M2, permutations = 9999)
+prot
+
+# -------------------------
+# 8) Visual comparison: PCoA plots for haul-level vs averaged
+# -------------------------
+
+p1 <- ggplot(scores_haul, aes(Axis1, Axis2, colour = Strato)) +
+  geom_point(alpha = 0.4, size = 2) +
+  geom_point(
+    data = cent_haul,
+    size = 4,
+    shape = 21,
+    fill = "white",
+    colour = "black"
+  ) +
+  labs(
+    title = "Haul-level PCoA (2021, 2023, 2024)",
+    x = paste0("PCoA1 (", round(var_haul[1], 1), "%)"),
+    y = paste0("PCoA2 (", round(var_haul[2], 1), "%)")
+  ) +
+  theme_bw()
+
+p2 <- ggplot(scores_avg, aes(Axis1, Axis2, colour = Strato)) +
+  geom_point(size = 3) +
+  geom_point(
+    data = cent_avg,
+    size = 4,
+    shape = 21,
+    fill = "white",
+    colour = "black"
+  ) +
+  labs(
+    title = "Averaged PCoA (YEAR × Strato)",
+    x = paste0("PCoA1 (", round(var_avg[1], 1), "%)"),
+    y = paste0("PCoA2 (", round(var_avg[2], 1), "%)")
+  ) +
+  theme_bw()
+
+p1
+p2
