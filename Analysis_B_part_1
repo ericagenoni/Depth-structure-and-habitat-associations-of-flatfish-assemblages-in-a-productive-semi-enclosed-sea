@@ -1,0 +1,274 @@
+############################################################
+# FRAMEWORK B (PART 1)
+# ==========================================================
+# (A) Read + harmonize benthos datasets (2021–2023 vs 2024)
+# (B) Merge 2021–2024 benthos, clean/recoding subcategories,
+#     aggregate to haul level, build community matrix,
+#     transform + scale, compute Bray–Curtis
+# (C) Spatial join: attach seabed substrate class (Folk 7)
+############################################################
+
+# -------------------------
+# A) Read and harmonize files
+# -------------------------
+library(readxl)
+library(dplyr)
+library(janitor)
+library(openxlsx)
+
+# Folder containing the Excel files
+path <- "C:/FISHMED_MEDITS/PaPeR/data"
+
+# Read benthos datasets
+benthos_old  <- read_excel(file.path(path, "Benthos_Temper_Codicecala2021_2023.xlsx"))
+benthos_2024 <- read_excel(file.path(path, "DatiBenthos_Med2024_Temp_Salin.xlsx"))
+
+# Standardize column names (lowercase, underscores, safe characters)
+benthos_old  <- clean_names(benthos_old)
+benthos_2024 <- clean_names(benthos_2024)
+
+# Quick checks
+colnames(benthos_old)
+colnames(benthos_2024)
+head(benthos_old)
+head(benthos_2024)
+
+# Reorder / rename columns in the 2021–2023 file to match a target schema
+benthos_old_ord <- benthos_old |>
+  rename(
+    stratum      = f912_stratum_code,
+    temperature  = bottom_temperature_beginning
+  ) |>
+  # Remove unwanted columns and enforce a consistent order
+  select(
+    suvey,
+    cala,
+    stratum,
+    f912_stratum_description,
+    gsa,
+    country,
+    data,
+    ora,
+    lat_decimali,
+    long_decimali,
+    depth_m,
+    temperature,
+    area_strascicata_km2,
+    species,
+    f951_scientific_genus,
+    f951_scientific_species,
+    medits_subcat,
+    note,
+    weight_kg,
+    number,
+    kg_km2,
+    num_km2
+  )
+
+# Define the desired column order (based on benthos_old_ord)
+col_order <- c(
+  "suvey","cala","stratum","f912_stratum_description","gsa","country","data","ora",
+  "lat_decimali","long_decimali","depth_m","temperature","area_strascicata_km2",
+  "species","f951_scientific_genus","f951_scientific_species","medits_subcat","note",
+  "weight_kg","number","kg_km2","num_km2"
+)
+
+# Harmonize the 2024 file: rename key columns and align column order
+# Any extra columns (e.g., salinity) are kept at the end via `everything()`
+benthos_2024_ord <- benthos_2024 |>
+  rename(
+    cala        = haul_number,
+    stratum     = f912_stratum_code,
+    temperature = temperatura
+  ) |>
+  select(all_of(col_order), everything())
+
+# Save cleaned datasets (optional “checkpoints”)
+write.xlsx(benthos_old_ord,  file = file.path(path, "benthos_2021_2023_ordinato.xlsx"))
+write.xlsx(benthos_2024_ord, file = file.path(path, "benthos_2024_ordinato.xlsx"))
+
+
+# -------------------------
+# B) Work on benthos 2021–2024 unified dataset
+# -------------------------
+library(stringr)
+
+# Read the already merged/stacked file (assumed created elsewhere)
+benthos2124 <- read_excel(file.path(path, "benthos_2021_2024_ordinato.xlsx"))
+
+# Summary: counts and percentages by MEDITS subcategory
+subcat_summary <- benthos2124 %>%
+  count(medits_subcat) %>%
+  mutate(percent = n / sum(n) * 100)
+print(subcat_summary, n = nrow(subcat_summary))
+
+# Inspect which genera/species appear in each subcategory (diagnostic table)
+genus_species_by_subcat <- benthos2124 %>%
+  group_by(medits_subcat) %>%
+  summarise(
+    n = n(),
+    percent = n() / nrow(benthos2124) * 100,
+    genus_unique   = paste(sort(unique(f951_scientific_genus)), collapse = ", "),
+    species_unique = paste(sort(unique(f951_scientific_species)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n))
+print(genus_species_by_subcat, n = nrow(genus_species_by_subcat))
+
+# Recode some subcategory codes to harmonize naming across sources
+benthos2124 <- benthos2124 %>%
+  mutate(
+    medits_subcat = recode(
+      medits_subcat,
+      "Dmb" = "Emb",
+      "Dtu" = "Etu",
+      "Dmg" = "Emg",
+      "Dec" = "Eec",
+      "Dmo" = "Emo"
+    )
+  )
+
+# Recompute summary after recoding
+subcat_summary <- benthos2124 %>%
+  count(medits_subcat) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  arrange(desc(n))
+print(subcat_summary, n = nrow(subcat_summary))
+
+# Define subcategories to remove (non-target / problematic / too broad, etc.)
+subcat_to_drop <- c("E","Bst","Emo","Ebr","Epo","G","Ehi","V","Epr","Bci","Ean","Ech","Ene")
+
+# Filter out these subcategories
+benthos2124 <- benthos2124 %>%
+  filter(!medits_subcat %in% subcat_to_drop)
+
+# Final subcategory summary after filtering
+subcat_summary <- benthos2124 %>%
+  count(medits_subcat) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  arrange(desc(n))
+print(subcat_summary, n = nrow(subcat_summary))
+
+# Basic totals / coverage checks
+n_totale <- nrow(benthos2124)
+n_totale
+
+benthos2124 %>%
+  count(suvey) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  arrange(desc(n))
+
+benthos2124 %>%
+  group_by(suvey) %>%
+  summarise(n_cala_uniche = n_distinct(cala), .groups = "drop") %>%
+  arrange(suvey)
+
+# Aggregate to haul-level composition by subcategory:
+# Each row = one haul x one subcategory, value = mean(kg_km2)
+benthos_agg <- benthos2124 %>%
+  group_by(suvey, stratum, cala, medits_subcat) %>%
+  summarise(
+    kg_km2 = mean(kg_km2, na.rm = TRUE),
+    # keep haul metadata (assumed constant within haul)
+    gsa  = dplyr::first(gsa),
+    country = dplyr::first(country),
+    f912_stratum_description = dplyr::first(f912_stratum_description),
+    data = dplyr::first(data),
+    ora  = dplyr::first(ora),
+    lat_decimali  = dplyr::first(lat_decimali),
+    long_decimali = dplyr::first(long_decimali),
+    depth_m       = dplyr::first(depth_m),
+    temperature   = dplyr::first(temperature),
+    area_strascicata_km2 = dplyr::first(area_strascicata_km2),
+    .groups = "drop"
+  )
+
+# Build a wide community matrix: rows = hauls, columns = benthos subcategories
+library(tidyr)
+library(vegan)
+
+species_matrix <- benthos_agg %>%
+  select(suvey, stratum, cala, medits_subcat, kg_km2,
+         lat_decimali, long_decimali, depth_m, temperature) %>%
+  pivot_wider(
+    names_from  = medits_subcat,
+    values_from = kg_km2,
+    values_fill = 0
+  )
+
+# Split metadata vs community matrix
+meta_vars <- c("suvey","stratum","cala","lat_decimali","long_decimali","depth_m","temperature")
+meta_data <- species_matrix %>% select(all_of(meta_vars))
+comm_matrix <- species_matrix %>% select(-all_of(meta_vars))
+
+# Fourth-root transformation (downweights dominance)
+comm_matrix_4rt <- comm_matrix^(1/4)
+
+# Range scaling (0–1) per column; guard against division by zero
+comm_matrix_scaled <- as.data.frame(
+  apply(comm_matrix_4rt, 2, function(x) {
+    if (max(x, na.rm = TRUE) == min(x, na.rm = TRUE)) {
+      rep(0, length(x))
+    } else {
+      (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+    }
+  })
+)
+
+# Bray–Curtis dissimilarity on the scaled matrix
+bray_dist <- vegdist(comm_matrix_scaled, method = "bray")
+
+# Optional: combine back into one object
+community_data <- cbind(meta_data, comm_matrix_scaled)
+
+
+# -------------------------
+# C) Spatial join: attach substrate class (Folk 7) to each haul
+# -------------------------
+library(sf)
+
+# Read substrate polygons (Folk 7 classification) and validate geometries
+shp_path <- "C:/FISHMED_MEDITS/multiscale_folk_7/seabed_substrate_250k.shp"
+substrati <- st_read(shp_path) %>%
+  st_make_valid()
+
+st_crs(substrati)
+
+# Convert hauls to sf points using lon/lat (WGS84 assumed)
+haul_sf <- benthos_agg %>%
+  st_as_sf(
+    coords = c("long_decimali", "lat_decimali"),
+    crs = 4326,
+    remove = FALSE
+  )
+
+# Spatial join: add only the descriptive substrate column (folk_7cl_t)
+haul_sf_sub <- st_join(
+  haul_sf,
+  substrati[, "folk_7cl_t"]
+)
+
+# Drop geometry and keep a regular data.frame
+benthos_agg_sub <- haul_sf_sub %>% st_drop_geometry()
+
+# Create a 1-row-per-haul substrate table (prevents row “explosion” in joins)
+substrato_per_haul <- benthos_agg_sub %>%
+  mutate(
+    suvey   = as.character(suvey),
+    stratum = as.character(stratum),
+    cala    = as.character(cala)
+  ) %>%
+  distinct(suvey, stratum, cala, folk_7cl_t)
+
+# Prepare metadata key types for a safe 1:1 join
+meta_data_fix <- meta_data %>%
+  mutate(
+    suvey   = as.character(suvey),
+    stratum = as.character(stratum),
+    cala    = as.character(cala)
+  )
+
+# Join substrate class onto the haul metadata
+meta_data_sub <- meta_data_fix %>%
+  left_join(substrato_per_haul, by = c("suvey", "stratum", "cala")) %>%
+  mutate(folk_7cl_t = as.factor(folk_7cl_t))
