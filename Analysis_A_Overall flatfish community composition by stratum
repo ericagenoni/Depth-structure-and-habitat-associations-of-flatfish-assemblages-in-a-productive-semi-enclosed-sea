@@ -1,0 +1,166 @@
+############################################
+# PCoA + PERMANOVA + beta-dispersion
+# Inputs expected:
+# - bray: 'dist' object (Bray-Curtis on your transformed/standardized matrix)
+# - metadata: data.frame with at least column stratum, row order matching bray/mat rows
+############################################
+
+library(dplyr)
+library(ggplot2)
+library(vegan)
+
+############################################
+# 0) Ensure grouping variable is a factor
+############################################
+metadata <- metadata %>%
+  mutate(Strato = as.factor(Strato))
+
+############################################
+# 1) PCoA (classical multidimensional scaling)
+# NOTE:
+# Bray-Curtis is generally non-Euclidean, so cmdscale can yield negative eigenvalues.
+# Consider add = TRUE to apply a correction (e.g., Cailliez/Lingoes) when needed.
+############################################
+pcoa_res <- cmdscale(bray, eig = TRUE, k = 2, add = TRUE)
+
+# % variance explained per axis:
+# Use only positive eigenvalues for a more interpretable percentage in non-Euclidean cases.
+eig <- pcoa_res$eig
+pos_eig <- eig[eig > 0]
+var_exp <- round(100 * pos_eig / sum(pos_eig), 1)
+
+pcoa_df <- data.frame(
+  PCoA1  = pcoa_res$points[, 1],
+  PCoA2  = pcoa_res$points[, 2],
+  Strato = metadata$Strato
+)
+
+############################################
+# 2) PCoA plot (shapes by stratum + ellipses)
+############################################
+# Provide a shape vector; if you have > length(shape_vals), ggplot recycles.
+shape_vals <- c(16, 17, 15, 3, 7, 8)
+
+p_pcoa <- ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2, shape = Strato)) +
+  stat_ellipse(
+    aes(group = Strato),
+    color = "black",
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
+  geom_point(color = "black", size = 3) +
+  scale_shape_manual(values = shape_vals, name = "Stratum") +
+  labs(
+    x = paste0("PCoA 1 (", var_exp[1], "%)"),
+    y = paste0("PCoA 2 (", var_exp[2], "%)")
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "right"
+  )
+
+p_pcoa
+
+############################################
+# 3) PERMANOVA: effect of Strato on community composition
+############################################
+perm_strato <- adonis2(
+  bray ~ Strato,
+  data = metadata,
+  permutations = 10000,
+  by = "margin"
+)
+
+print(perm_strato)
+
+############################################
+# 4) beta-dispersion (homogeneity of multivariate dispersion)
+# This checks whether group dispersions differ (PERMANOVA can be sensitive to this).
+############################################
+beta_disp <- betadisper(bray, group = metadata$Strato)
+
+# Global test + pairwise comparisons
+beta_perm <- permutest(
+  beta_disp,
+  permutations = 10000,
+  pairwise = TRUE
+)
+
+print(beta_disp)
+print(beta_perm)
+
+# Pairwise table (if present)
+pairwise_disp <- as.data.frame(beta_perm$pairwise)
+pairwise_disp$Comparison <- rownames(pairwise_disp)
+pairwise_disp
+
+# Visual diagnostics
+plot(beta_disp, hull = TRUE, ellipse = TRUE)
+
+
+
+
+############################################
+# 5) Pairwise PERMANOVA between strata
+############################################
+
+library(dplyr)
+library(vegan)
+
+metadata <- metadata %>% mutate(Strato = as.factor(Strato))
+
+strata_levels <- levels(metadata$Strato)
+bray_mat <- as.matrix(bray)
+
+pair_perm <- list()
+
+idx <- 1
+for (i in 1:(length(strata_levels) - 1)) {
+  for (j in (i + 1):length(strata_levels)) {
+
+    s1 <- strata_levels[i]
+    s2 <- strata_levels[j]
+
+    sel <- metadata$Strato %in% c(s1, s2)
+
+    # Ensure each group has enough samples
+    tab <- table(metadata$Strato[sel])
+    if (any(tab < 2)) {
+      pair_perm[[idx]] <- data.frame(
+        stratum1 = s1, stratum2 = s2,
+        F = NA_real_, R2 = NA_real_, p = NA_real_,
+        note = "Skipped: <2 samples in at least one group"
+      )
+      idx <- idx + 1
+      next
+    }
+
+    bray_sub <- as.dist(bray_mat[sel, sel])
+
+    meta_sub <- data.frame(
+      Strato = droplevels(metadata$Strato[sel])
+    )
+
+    tmp <- adonis2(
+      bray_sub ~ Strato,
+      data = meta_sub,
+      permutations = 10000
+    )
+
+    pair_perm[[idx]] <- data.frame(
+      stratum1 = s1,
+      stratum2 = s2,
+      F        = tmp$F[1],
+      R2       = tmp$R2[1],
+      p        = tmp$`Pr(>F)`[1],
+      note     = NA_character_
+    )
+    idx <- idx + 1
+  }
+}
+
+pair_perm_df <- bind_rows(pair_perm) %>%
+  mutate(p_adj = p.adjust(p, method = "BH"))
+
+pair_perm_df
+
