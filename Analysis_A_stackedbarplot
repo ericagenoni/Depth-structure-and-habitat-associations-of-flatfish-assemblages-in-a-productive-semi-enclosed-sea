@@ -1,0 +1,135 @@
+############################################
+# Stacked bar plot: species composition by Stratum
+# Input objects expected in the workspace:
+# - metadata: data.frame with columns year and stratum (one row per (year, stratum))
+# - mat_std:  numeric community matrix (same row order as metadata), species columns
+# Output:
+# - stacked bar plot (% composition) saved as PNG
+############################################
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+############################################
+# 0) Define species palette (named vector: SPECIES -> color)
+############################################
+pal_species <- c(
+  "BOS" = "#1F78B4",
+  "FLE" = "#FF7F00",
+  "HIS" = "#33A02C",
+  "KLE" = "#E31A1C",
+  "LAT" = "#6A3D9A",
+  "LUT" = "#8B4513",
+  "MAC" = "#E377C2",
+  "MAX" = "#7F7F7F",
+  "NIG" = "#BDBD22",
+  "REG" = "#A6CEE3",
+  "RHO" = "#FDBF6F",
+  "RUP" = "#B2DF8A",
+  "THO" = "#FB9A99",
+  "VAR" = "#CAB2D6",
+  "VUL" = "#C49C94",
+  "WHS" = "#525252"  
+)
+
+############################################
+# 1) Re-attach metadata to the standardized matrix
+############################################
+mat_std_df <- bind_cols(metadata, as.data.frame(mat_std))
+
+############################################
+# 2) Identify species columns (everything except year and stratum)
+############################################
+species_cols <- setdiff(names(mat_std_df), c("YEAR", "Strato"))
+
+############################################
+# Optional sanity checks (recommended)
+############################################
+# (a) Make sure all species in data have a color
+missing_in_palette <- setdiff(species_cols, names(pal_species))
+if (length(missing_in_palette) > 0) {
+  warning("These species are missing from pal_species and will be uncolored unless added: ",
+          paste(missing_in_palette, collapse = ", "))
+}
+
+# (b) Keep palette only for species actually present (avoids unused legend entries unless drop=FALSE)
+pal_use <- pal_species[names(pal_species) %in% species_cols]
+
+############################################
+# 3) Mean standardized abundance by Strato (averaging across years)
+############################################
+stab_strato <- mat_std_df %>%
+  group_by(Strato) %>%
+  summarise(
+    across(all_of(species_cols), ~ mean(.x, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+############################################
+# 4) Convert to long format and compute % composition within each Strato
+############################################
+stab_long <- stab_strato %>%
+  pivot_longer(
+    cols      = all_of(species_cols),
+    names_to  = "SPECIES",
+    values_to = "mean_std"
+  ) %>%
+  group_by(Strato) %>%
+  mutate(
+    # If a stratum sums to 0 (all zeros), avoid division-by-zero
+    pct = ifelse(sum(mean_std, na.rm = TRUE) > 0,
+                 mean_std / sum(mean_std, na.rm = TRUE) * 100,
+                 0)
+  ) %>%
+  ungroup()
+
+############################################
+# 5) Order strata and species for nicer plotting
+############################################
+# Order strata numerically (or as they appear)
+stab_long <- stab_long %>%
+  mutate(Strato = factor(Strato, levels = sort(unique(Strato))))
+
+# Order species by their overall contribution across strata
+species_order <- stab_long %>%
+  group_by(SPECIES) %>%
+  summarise(total_pct = sum(pct, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total_pct)) %>%
+  pull(SPECIES)
+
+stab_long <- stab_long %>%
+  mutate(SPECIES = factor(SPECIES, levels = species_order))
+
+############################################
+# 6) Plot
+############################################
+p <- ggplot(stab_long, aes(x = Strato, y = pct, fill = SPECIES)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black", linewidth = 0.15) +
+  scale_fill_manual(values = pal_use, drop = FALSE) +
+  labs(
+    x = "Stratum",
+    y = "Composition (%)",
+    fill = "Species"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+
+############################################
+# 8) Save plot
+############################################
+out_path <- "C:/FISHMED_MEDITS/PaPeR/stacked_species_stratum.png"
+
+ggsave(
+  filename = out_path,
+  plot     = p,
+  width    = 10,
+  height   = 6,
+  dpi      = 300,
+  units    = "in"
+)
+
+message("Plot saved to: ", out_path)
