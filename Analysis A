@@ -1,0 +1,302 @@
+############################################################
+## MEDITS community workflow (Framework A)
+## - Filtering years/species/stratum
+## - Species occurrence frequency
+## - Community matrix, Bray-Curtis, PCoA
+## - PERMANOVA, beta-dispersion, pairwise PERMANOVA
+## - envfit vectors overlay
+## - Indicator Species Analysis (IndVal.g)
+############################################################
+
+## ---- Packages (load once) ----
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(vegan)
+library(openxlsx2)
+library(ggrepel)
+library(grid)
+library(indicspecies)
+
+set.seed(123)  # reproducibility for permutation-based procedures
+
+## ---- File path ----
+xlsx_path <- "C:/FISHMED_MEDITS/PaPeR/MEDITS_1994_2024_joined.xlsx"
+out_dir   <- "C:/FISHMED_MEDITS/PaPeR"
+
+## ---- Read data ----
+sheets <- excel_sheets(xlsx_path)
+sheet_name <- sheets[1]   # or set explicitly, e.g. "ALL_joined"
+df <- read_excel(xlsx_path, sheet = sheet_name)
+
+## Quick checks
+names(df)
+sort(unique(na.omit(df$YEAR)))
+sort(unique(na.omit(df$SPECIES)))
+
+## ---- Filter years ----
+years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2014, 2017)
+
+df_filt <- df %>%
+  filter(!YEAR %in% years_to_drop)
+
+years_unique_filtered <- sort(unique(df_filt$YEAR))
+years_unique_filtered
+
+## ---- Species occurrence frequency (before removing codes) ----
+n_years_total <- n_distinct(df_filt$YEAR)
+
+freq_species <- df_filt %>%
+  group_by(SPECIES) %>%
+  summarise(
+    years_present = n_distinct(YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) &
+                                      TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    freq_percent = 100 * years_present / n_years_total,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
+
+print(freq_species, n = 40)
+
+## Plot frequency
+freq_species$SPECIES <- factor(freq_species$SPECIES,
+                               levels = freq_species$SPECIES[order(freq_species$freq_percent,
+                                                                  decreasing = TRUE)])
+
+ggplot(freq_species, aes(x = SPECIES, y = freq_percent)) +
+  geom_col() +
+  coord_flip() +
+  geom_hline(yintercept = 50, linetype = "dashed", colour = "red") +
+  labs(
+    x = "Species",
+    y = "Presence in time series (%)",
+    title = "Frequency of occurrence per species"
+  ) +
+  theme_bw()
+
+## ---- Remove non-informative codes + drop stratum 21110 ----
+species_to_drop <- c("LAS", "SPP", "ACU", "IMP", "POD", "TEN", "TYP", "OCE")
+
+df_clean <- df_filt %>%
+  filter(!SPECIES %in% species_to_drop) %>%
+  filter(Strato != 21110)
+
+## How many rows removed for stratum 21110 (from df_filt)?
+n_21110 <- df_filt %>%
+  filter(Strato == 21110) %>%
+  nrow()
+n_21110
+
+df_filt %>%
+  filter(Strato == 21110) %>%
+  count(SPECIES)
+
+nrow(df_clean)
+
+## ---- Updated frequency after cleaning ----
+n_years_total2 <- n_distinct(df_clean$YEAR)
+
+freq_species2 <- df_clean %>%
+  group_by(SPECIES) %>%
+  summarise(
+    years_present = n_distinct(YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) &
+                                      TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    freq_percent = 100 * years_present / n_years_total2,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
+
+print(freq_species2, n = nrow(freq_species2))
+
+## ---- Framework A: aggregate to YEAR x Stratum x SPECIES ----
+df_framework_A <- df_clean %>%
+  group_by(YEAR, Strato, SPECIES) %>%
+  summarise(
+    mean_weight = mean(TOTAL_WEIGHT_IN_THE_HAUL, na.rm = TRUE),
+    mean_number = mean(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    n_hauls     = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(year_depth_id = paste(YEAR, Strato, sep = "_")) %>%
+  arrange(YEAR, Strato, SPECIES)
+
+df_framework_A
+
+## ---- Save Framework A to the existing Excel (robust) ----
+wb <- wb_load(xlsx_path)
+
+sheet_out <- "framework_A"
+if (sheet_out %in% wb$sheet_names) {
+  wb$remove_worksheet(sheet_out)
+}
+wb$add_worksheet(sheet_out)
+wb$add_data(sheet_out, df_framework_A)
+wb$save(xlsx_path)
+
+## ---- Build community matrix: samples = YEAR x Stratum ----
+mat_num <- df_framework_A %>%
+  select(YEAR, Strato, SPECIES, mean_number) %>%
+  pivot_wider(
+    names_from  = SPECIES,
+    values_from = mean_number,
+    values_fill = 0
+  )
+
+metadata <- mat_num %>% select(YEAR, Strato)
+mat <- mat_num %>% select(-YEAR, -Strato)
+
+## ---- Transformations and Bray-Curtis ----
+mat_sqrt4 <- mat^(1/4)
+mat_std   <- decostand(mat_sqrt4, method = "range")
+
+bray <- vegdist(mat_std, method = "bray")
+
+## ---- PCoA ----
+pcoa_res <- cmdscale(bray, eig = TRUE, k = 2)
+var_exp <- round(100 * pcoa_res$eig / sum(pcoa_res$eig), 1)
+
+pcoa_df <- data.frame(
+  PCoA1  = pcoa_res$points[, 1],
+  PCoA2  = pcoa_res$points[, 2],
+  Strato = as.factor(metadata$Strato)
+)
+
+shape_vals <- c(16, 17, 15, 3, 7, 8)
+
+p_pcoa <- ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2, shape = Strato)) +
+  stat_ellipse(aes(group = Strato),
+               color = "black", linewidth = 0.4, show.legend = FALSE) +
+  geom_point(color = "black", size = 3) +
+  scale_shape_manual(values = shape_vals) +
+  labs(
+    x = paste0("PCoA 1 (", var_exp[1], "%)"),
+    y = paste0("PCoA 2 (", var_exp[2], "%)"),
+    shape = "Depth stratum"
+  ) +
+  theme_classic() +
+  theme(legend.position = "right")
+
+p_pcoa
+ggsave(file.path(out_dir, "PCoA_framework_A.png"), p_pcoa, width = 7, height = 5)
+
+## ---- PERMANOVA ----
+metadata$Strato <- as.factor(metadata$Strato)
+
+perm_strato <- adonis2(bray ~ Strato,
+                       data = metadata,
+                       permutations = 10000,
+                       by = "margin")
+perm_strato
+
+## ---- Beta-dispersion ----
+beta_disp <- betadisper(bray, metadata$Strato)
+beta_perm <- permutest(beta_disp, permutations = 10000, pairwise = TRUE)
+
+beta_disp
+beta_perm
+beta_perm$pairwise
+
+plot(beta_disp, hull = TRUE, ellipse = TRUE)
+
+## ---- Pairwise PERMANOVA between strata ----
+strata <- levels(metadata$Strato)
+bray_mat <- as.matrix(bray)
+
+pair_perm <- data.frame(
+  stratum1 = character(),
+  stratum2 = character(),
+  F        = numeric(),
+  R2       = numeric(),
+  p        = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (i in 1:(length(strata) - 1)) {
+  for (j in (i + 1):length(strata)) {
+
+    s1 <- strata[i]
+    s2 <- strata[j]
+    sel <- metadata$Strato %in% c(s1, s2)
+
+    bray_sub <- as.dist(bray_mat[sel, sel])
+    meta_sub <- data.frame(Strato = droplevels(metadata$Strato[sel]))
+
+    tmp <- adonis2(bray_sub ~ Strato, data = meta_sub, permutations = 10000)
+
+    pair_perm <- rbind(
+      pair_perm,
+      data.frame(
+        stratum1 = s1,
+        stratum2 = s2,
+        F        = tmp$F[1],
+        R2       = tmp$R2[1],
+        p        = tmp$`Pr(>F)`[1],
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+
+## Optional: multiple-testing correction (recommended)
+pair_perm$p_adj_bh <- p.adjust(pair_perm$p, method = "BH")
+
+pair_perm
+
+## ---- envfit vectors on PCoA (descriptive: no permutations) ----
+ef <- envfit(pcoa_res$points, mat_std, permutations = 0)
+vec <- scores(ef, display = "vectors")
+
+xlim_pcoa <- range(pcoa_df$PCoA1)
+ylim_pcoa <- range(pcoa_df$PCoA2)
+
+max_vec_x <- max(abs(vec[, 1]))
+max_vec_y <- max(abs(vec[, 2]))
+
+base_scale <- min(
+  0.9 * max(abs(xlim_pcoa)) / max_vec_x,
+  0.9 * max(abs(ylim_pcoa)) / max_vec_y
+)
+
+extra_scale <- 1.5
+arrow_mul <- base_scale * extra_scale
+vec_scaled <- vec * arrow_mul
+
+arrows_df <- data.frame(
+  species = rownames(vec_scaled),
+  PCoA1   = vec_scaled[, 1],
+  PCoA2   = vec_scaled[, 2],
+  r2      = ef$vectors$r
+)
+
+r2_threshold <- 0.48
+arrows_df_filt <- arrows_df[arrows_df$r2 >= r2_threshold, ]
+
+p_pcoa_envfit <- p_pcoa +
+  geom_segment(
+    data = arrows_df_filt,
+    aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
+    colour = "blue",
+    size   = 0.6,
+    arrow  = arrow(length = unit(0.25, "cm"), type = "closed"),
+    inherit.aes = FALSE
+  )
+
+p_pcoa_envfit
+ggsave(file.path(out_dir, "PCoA_framework_A_envfit_flatfish.png"),
+       p_pcoa_envfit, width = 7, height = 5, dpi = 300)
+
+## ---- Indicator Species Analysis (IndVal.g) ----
+groups <- as.factor(metadata$Strato)
+comm <- mat_std   # keep consistent with ordination inputs (as in your script)
+
+isa_res <- multipatt(comm, groups,
+                     func = "IndVal.g",
+                     control = how(nperm = 10000))
+summary(isa_res, indvalcomp = TRUE)
+
+isa_res2 <- multipatt(comm, groups,
+                      func = "IndVal.g",
+                      max.order = 2,
+                      control = how(nperm = 10000))
+summary(isa_res2, indvalcomp = TRUE)
