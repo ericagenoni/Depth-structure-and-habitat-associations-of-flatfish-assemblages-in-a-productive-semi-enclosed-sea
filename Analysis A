@@ -300,3 +300,97 @@ isa_res2 <- multipatt(comm, groups,
                       max.order = 2,
                       control = how(nperm = 10000))
 summary(isa_res2, indvalcomp = TRUE)
+
+
+############################################
+# STACKED BARPLOT (% composition) on RAW means
+# 1) Aggregate: YEAR × Strato × SPECIES (mean abundance)
+# 2) Aggregate across years: Strato × SPECIES (sum of annual means)
+# 3) Convert to % within each Strato (0–100; sum = 100)
+# 4) Order species by overall composition (dominant species at bottom)
+# 5) Stacked plot (ylim 0–100 without dropping levels/rows)
+############################################
+
+## Note: uses df_clean (already created above)
+
+# ---- Palette (user-defined) ----
+pal_species <- c(
+  "BOS" = "#1F78B4",
+  "FLE" = "#FF7F00",
+  "HIS" = "#33A02C",
+  "KLE" = "#E31A1C",
+  "LAT" = "#6A3D9A",
+  "LUT" = "#8B4513",
+  "MAC" = "#E377C2",
+  "MAX" = "#7F7F7F",
+  "NIG" = "#BDBD22",
+  "REG" = "#A6CEE3",
+  "RHO" = "#FDBF6F",
+  "RUP" = "#B2DF8A",
+  "THO" = "#FB9A99",
+  "VAR" = "#CAB2D6",
+  "VUL" = "#C49C94",
+  "WHS" = "#525252"
+)
+
+# 1) YEAR × Strato × SPECIES: raw mean number per haul
+df_yss <- df_clean %>%
+  group_by(YEAR, Strato, SPECIES) %>%
+  summarise(
+    mean_number = mean(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2) Across years: Strato × SPECIES (sum of annual means)
+stab_raw <- df_yss %>%
+  group_by(Strato, SPECIES) %>%
+  summarise(
+    value = sum(mean_number, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 3) % within Strato (robust even if a stratum sum is 0)
+stab_long <- stab_raw %>%
+  group_by(Strato) %>%
+  mutate(
+    denom = sum(value, na.rm = TRUE),
+    pct   = ifelse(denom > 0, 100 * value / denom, 0)
+  ) %>%
+  ungroup()
+
+# 4) Species order by overall contribution (dominant at bottom)
+species_order <- stab_long %>%
+  group_by(SPECIES) %>%
+  summarise(total = sum(pct, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total)) %>%
+  pull(SPECIES)
+
+stab_long <- stab_long %>%
+  mutate(SPECIES = factor(SPECIES, levels = species_order))
+
+# 5A) Stacked plot (with legend)
+ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
+  geom_col(color = "black", linewidth = 0.15) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_fill_manual(values = pal_species, breaks = species_order, drop = FALSE) +
+  labs(x = "Stratum", y = "Composition (%)", fill = "Species") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+
+# 5B) Stacked plot (no legend labels/title)
+p2 <- ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
+  geom_col(color = "black", linewidth = 0.25) +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_fill_manual(values = pal_species, drop = FALSE) +
+  labs(x = "Stratum", y = "Composition (%)") +
+  theme_bw() +
+  theme(legend.title = element_blank())
+
+p2
+# Optional: save
+# ggsave(file.path(out_dir, "StackedBar_Composition_rawmeans.png"),
+#        p2, width = 7, height = 5, dpi = 300)
+
