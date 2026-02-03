@@ -1,0 +1,864 @@
+###############################################################################
+# Framework B — Benthos (2021–2024) + Flatfish (subset 2021, 2023, 2024)
+# Data harmonization → filtering → aggregation → wide matrices → transforms
+# Bray–Curtis → PCoA → PERMANOVA → envfit (benthos + flatfish + temperature)
+# Optional: join seabed substrate (EMODnet/Folk7) and plot centroid labels
+###############################################################################
+
+# =========================
+# 1) Libraries
+# =========================
+library(readxl)
+library(dplyr)
+library(janitor)
+library(openxlsx)
+library(stringr)
+library(tidyr)
+library(vegan)
+library(ape)
+library(ggplot2)
+library(grid)
+library(ggrepel)
+library(patchwork)
+library(cowplot)
+library(sf)
+
+# =========================
+# 2) Paths
+# =========================
+path_data <- "C:/FISHMED_MEDITS/PaPeR/data"
+
+# =========================
+# 3) Read Excel files (Benthos)
+# =========================
+benthos_old  <- read_excel(file.path(path_data, "Benthos_Temper_Codicecala2021_2023.xlsx"))
+benthos_2024 <- read_excel(file.path(path_data, "DatiBenthos_Med2024_Temp_Salin.xlsx"))
+
+# =========================
+# 4) Clean column names
+#    (lowercase, no spaces/special chars)
+# =========================
+benthos_old  <- clean_names(benthos_old)
+benthos_2024 <- clean_names(benthos_2024)
+
+# Optional checks
+# colnames(benthos_old)
+# colnames(benthos_2024)
+# head(benthos_old)
+# head(benthos_2024)
+
+# =========================
+# 5) Harmonize benthos columns + order
+# =========================
+
+# Desired column order (harmonized target)
+col_order <- c(
+  "suvey",
+  "cala",
+  "stratum",
+  "f912_stratum_description",
+  "gsa",
+  "country",
+  "data",
+  "ora",
+  "lat_decimali",
+  "long_decimali",
+  "depth_m",
+  "temperature",
+  "area_strascicata_km2",
+  "species",
+  "f951_scientific_genus",
+  "f951_scientific_species",
+  "medits_subcat",
+  "note",
+  "weight_kg",
+  "number",
+  "kg_km2",
+  "num_km2"
+)
+
+# --- 2021–2023 (old) ---
+benthos_old_ord <- benthos_old %>%
+  rename(
+    stratum      = f912_stratum_code,
+    temperature  = bottom_temperature_beginning
+  ) %>%
+  select(
+    suvey,
+    cala,
+    stratum,
+    f912_stratum_description,
+    gsa,
+    country,
+    data,
+    ora,
+    lat_decimali,
+    long_decimali,
+    depth_m,
+    temperature,
+    area_strascicata_km2,
+    species,
+    f951_scientific_genus,
+    f951_scientific_species,
+    medits_subcat,
+    note,
+    weight_kg,
+    number,
+    kg_km2,
+    num_km2
+  )
+
+# --- 2024 ---
+# Put any extra columns (e.g., salinity) at the end with `everything()`
+benthos_2024_ord <- benthos_2024 %>%
+  rename(
+    cala        = haul_number,
+    stratum     = f912_stratum_code,
+    temperature = temperatura
+  ) %>%
+  select(all_of(col_order), everything())
+
+# Save the cleaned/ordered datasets
+write.xlsx(benthos_old_ord,  file = file.path(path_data, "benthos_2021_2023_ordinato.xlsx"))
+write.xlsx(benthos_2024_ord, file = file.path(path_data, "benthos_2024_ordinato.xlsx"))
+
+# =========================
+# 6) Read merged benthos 2021–2024 (already combined file)
+# =========================
+benthos2124 <- read_excel(file.path(path_data, "benthos_2021_2024_ordinato.xlsx"))
+
+# Optional check
+# benthos2124$medits_subcat
+
+# =========================
+# 7) Benthos subcategory diagnostics + recode + filter
+# =========================
+
+# (A) Frequency table (before recode)
+subcat_summary <- benthos2124 %>%
+  count(medits_subcat) %>%
+  mutate(percent = n / sum(n) * 100)
+
+print(subcat_summary, n = nrow(subcat_summary))
+
+# (B) List unique genus/species per subcat (diagnostic)
+genus_species_by_subcat <- benthos2124 %>%
+  group_by(medits_subcat) %>%
+  summarise(
+    n             = n(),
+    percent       = n() / nrow(benthos2124) * 100,
+    genus_unique  = paste(sort(unique(f951_scientific_genus)), collapse = ", "),
+    species_unique= paste(sort(unique(f951_scientific_species)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n))
+
+print(genus_species_by_subcat, n = nrow(genus_species_by_subcat))
+
+# (C) Recode old "D.." labels into "E.." labels
+benthos2124 <- benthos2124 %>%
+  mutate(
+    medits_subcat = recode(
+      medits_subcat,
+      "Dmb" = "Emb",
+      "Dtu" = "Etu",
+      "Dmg" = "Emg",
+      "Dec" = "Eec",
+      "Dmo" = "Emo"
+    )
+  )
+
+# (D) Frequency table (after recode)
+subcat_summary <- benthos2124 %>%
+  count(medits_subcat) %>%
+  mutate(percent = n / sum(n) * 100) %>%
+  arrange(desc(n))
+
+print(subcat_summary, n = nrow(subcat_summary))
+
+# (E) Drop unwanted subcats
+subcat_to_drop <- c(
+  "E",
+  "Bst",
+  "Emo",
+  "Ebr",
+  "Epo",
+  "G",
+  "Ehi",
+  "V",
+  "Epr",
+  "Bci",
+  "Ean",
+  "Ech",
+  "Ene"
+)
+
+benthos2124 <- benthos2124 %>%
+  filter(!medits_subcat %in% subcat_to_drop)
+
+# Optional checks
+# nrow(benthos2124)
+# benthos2124 %>% count(suvey) %>% arrange(desc(n))
+# benthos2124 %>% group_by(suvey) %>% summarise(n_cala_uniche = n_distinct(cala)) %>% arrange(suvey)
+
+# =========================
+# 8) Aggregate benthos to one row per (survey, stratum, haul, subcat)
+#    (use mean kg_km2 where duplicates exist)
+# =========================
+benthos_agg <- benthos2124 %>%
+  group_by(suvey, stratum, cala, medits_subcat) %>%
+  summarise(
+    kg_km2 = mean(kg_km2, na.rm = TRUE),
+    gsa  = dplyr::first(gsa),
+    country = dplyr::first(country),
+    f912_stratum_description = dplyr::first(f912_stratum_description),
+    data = dplyr::first(data),
+    ora  = dplyr::first(ora),
+    lat_decimali  = dplyr::first(lat_decimali),
+    long_decimali = dplyr::first(long_decimali),
+    depth_m       = dplyr::first(depth_m),
+    temperature   = dplyr::first(temperature),
+    area_strascicata_km2 = dplyr::first(area_strascicata_km2),
+    .groups = "drop"
+  )
+
+# =========================
+# 9) Create benthos wide matrix (haul x subcat)
+# =========================
+species_matrix <- benthos_agg %>%
+  select(
+    suvey, stratum, cala, medits_subcat, kg_km2,
+    lat_decimali, long_decimali, depth_m, temperature
+  ) %>%
+  pivot_wider(
+    names_from  = medits_subcat,
+    values_from = kg_km2,
+    values_fill = 0
+  )
+
+# Split metadata vs community matrix
+meta_vars <- c("suvey", "stratum", "cala",
+              "lat_decimali", "long_decimali", "depth_m", "temperature")
+
+meta_benthos <- species_matrix %>% select(all_of(meta_vars))
+comm_benthos <- species_matrix %>% select(-all_of(meta_vars))
+
+# 4th-root transform + 0–1 scaling by column range
+comm_benthos_4rt <- comm_benthos^(1/4)
+
+comm_benthos_scaled <- as.data.frame(
+  apply(comm_benthos_4rt, 2, function(x) {
+    if (max(x, na.rm = TRUE) == min(x, na.rm = TRUE)) {
+      rep(0, length(x))  # avoid division by zero
+    } else {
+      (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+    }
+  })
+)
+
+# Bray–Curtis (benthos only; optional)
+bray_benthos <- vegdist(comm_benthos_scaled, method = "bray")
+
+community_data <- cbind(meta_benthos, comm_benthos_scaled)
+
+# =========================
+# 10) Seabed substrate join (point-in-polygon, Folk7)
+# =========================
+shp_path <- "C:/FISHMED_MEDITS/multiscale_folk_7/seabed_substrate_250k.shp"
+substrati <- st_read(shp_path) %>%
+  st_make_valid()
+
+# Convert benthos_agg to sf points (assume lon/lat WGS84)
+haul_sf <- benthos_agg %>%
+  st_as_sf(
+    coords = c("long_decimali", "lat_decimali"),
+    crs = 4326,
+    remove = FALSE
+  )
+
+# Join only the substrate text column (adapt if needed)
+haul_sf_sub <- st_join(haul_sf, substrati[, "folk_7cl_t"])
+
+# Back to data.frame
+benthos_agg_sub <- haul_sf_sub %>%
+  st_drop_geometry()
+
+# Reduce to one row per haul (distinct key)
+substrato_per_haul <- benthos_agg_sub %>%
+  mutate(
+    suvey   = as.character(suvey),
+    stratum = as.character(stratum),
+    cala    = as.character(cala)
+  ) %>%
+  distinct(suvey, stratum, cala, folk_7cl_t)
+
+# Prepare meta_benthos for safe join (character keys)
+meta_benthos_fix <- meta_benthos %>%
+  mutate(
+    suvey   = as.character(suvey),
+    stratum = as.character(stratum),
+    cala    = as.character(cala)
+  )
+
+meta_benthos_sub <- meta_benthos_fix %>%
+  left_join(substrato_per_haul, by = c("suvey", "stratum", "cala")) %>%
+  mutate(folk_7cl_t = as.factor(folk_7cl_t))
+
+# =========================
+# 11) Flatfish framework (MEDITS 1994–2024 joined file)
+# =========================
+xlsx_path <- "C:/FISHMED_MEDITS/PaPeR/MEDITS_1994_2024_joined.xlsx"
+
+sheets <- excel_sheets(xlsx_path)
+sheet_name <- sheets[1]  # change if you want a specific sheet
+
+df <- read_excel(xlsx_path, sheet = sheet_name)
+
+# Optional diagnostics
+# names(df)
+# sort(unique(na.omit(df$SPECIES)))
+# sort(unique(na.omit(df$YEAR)))
+
+# =========================
+# 12) Filter years + filter species + remove stratum 21110
+# =========================
+years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2014, 2017)
+
+df_filtered <- df %>%
+  filter(!YEAR %in% years_to_drop)
+
+# Species frequency across remaining years
+n_years_total <- length(unique(df_filtered$YEAR))
+
+freq_specie <- df_filtered %>%
+  group_by(SPECIES) %>%
+  summarise(
+    anni_presenti = n_distinct(YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) & TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    freq_percent  = 100 * anni_presenti / n_years_total,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
+
+# Optional plot (overall)
+# freq_specie$SPECIES <- factor(freq_specie$SPECIES,
+#                               levels = freq_specie$SPECIES[order(freq_specie$freq_percent,
+#                                                                  decreasing = TRUE)])
+# ggplot(freq_specie, aes(x = SPECIES, y = freq_percent)) +
+#   geom_col() +
+#   coord_flip() +
+#   theme_bw() +
+#   geom_hline(yintercept = 50, linetype = "dashed", colour = "red") +
+#   labs(x="Species", y="Presence in time series (%)", title="Frequency of occurrence per species")
+
+species_to_drop <- c("LAS", "SPP", "ACU", "IMP", "POD", "TEN", "TYP", "OCE")
+
+df_clean <- df_filtered %>%
+  filter(!SPECIES %in% species_to_drop) %>%
+  filter(Strato != 21110)
+
+# =========================
+# 13) Framework B: keep only years 2021, 2023, 2024
+# =========================
+years_keep <- c(2021, 2023, 2024)
+
+df_target <- df_clean %>%
+  filter(YEAR %in% years_keep)
+
+# Species frequency in the target subset (optional)
+n_years_target <- length(unique(df_target$YEAR))
+
+freq_specie_years <- df_target %>%
+  group_by(SPECIES) %>%
+  summarise(
+    anni_presenti = n_distinct(YEAR[TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    freq_percent  = 100 * anni_presenti / n_years_target,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(freq_percent))
+
+# print(freq_specie_years, n = Inf)
+
+# =========================
+# 14) Flatfish wide matrix (haul x species)
+# =========================
+matrice_haul_specie <- df_target %>%
+  select(YEAR, Strato, HAUL_NUMBER, SPECIES, TOTAL_NUMBER_IN_THE_HAUL) %>%
+  group_by(YEAR, Strato, HAUL_NUMBER, SPECIES) %>%
+  summarise(
+    TOTAL_NUMBER_IN_THE_HAUL = mean(TOTAL_NUMBER_IN_THE_HAUL, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from  = SPECIES,
+    values_from = TOTAL_NUMBER_IN_THE_HAUL,
+    values_fill = 0
+  ) %>%
+  arrange(YEAR, Strato, HAUL_NUMBER)
+
+meta_fish <- matrice_haul_specie %>%
+  select(YEAR, Strato, HAUL_NUMBER)
+
+comm_fish <- matrice_haul_specie %>%
+  select(-YEAR, -Strato, -HAUL_NUMBER)
+
+# 4th-root + 0–1 scaling
+comm_fish_4rt <- comm_fish^(1/4)
+
+comm_fish_scaled <- as.data.frame(
+  apply(comm_fish_4rt, 2, function(x) {
+    if (max(x, na.rm = TRUE) == min(x, na.rm = TRUE)) {
+      rep(0, length(x))
+    } else {
+      (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+    }
+  })
+)
+
+# Bray–Curtis distance (flatfish)
+bray_fish <- vegdist(comm_fish_scaled, method = "bray")
+
+# =========================
+# 15) PCoA + PERMANOVA (flatfish)
+# =========================
+# PCoA (cmdscale)
+pcoa_res <- cmdscale(bray_fish, eig = TRUE, k = 2)
+
+pcoa_df <- as.data.frame(pcoa_res$points[, 1:2])
+colnames(pcoa_df) <- c("PCoA1", "PCoA2")
+
+eig_vals <- pcoa_res$eig
+rel_eig <- eig_vals[eig_vals > 0] / sum(eig_vals[eig_vals > 0])  # only positive eigenvalues
+
+# Add metadata
+pcoa_df <- bind_cols(meta_fish, pcoa_df)
+pcoa_df$Strato <- as.factor(pcoa_df$Strato)
+
+# PERMANOVA: effect of Strato
+perm_stratum <- adonis2(
+  bray_fish ~ Strato,
+  data = meta_fish,
+  permutations = 10000
+)
+
+perm_stratum
+
+# =========================
+# 16) PCoA plot (flatfish, no centroids)
+# =========================
+shape_vals <- c(16, 17, 15, 3, 7, 8)  # adapt to number of strata
+gray_vals  <- c("black","gray10", "gray35", "gray50", "gray60", "gray80")
+
+p_pcoa_fish_nocentroid_gray <- ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2)) +
+  geom_point(aes(shape = Strato, color = Strato), size = 3) +
+  scale_shape_manual(values = shape_vals) +
+  scale_color_manual(values = gray_vals) +
+  theme_classic() +
+  labs(
+    x = paste0("PCoA1 (", round(rel_eig[1] * 100, 1), "%)"),
+    y = paste0("PCoA2 (", round(rel_eig[2] * 100, 1), "%)"),
+    shape = "Stratum",
+    color = "Stratum"
+  ) +
+  theme(panel.grid = element_blank(), legend.position = "right")
+
+p_pcoa_fish_nocentroid_gray
+
+# =========================
+# 17) Match common hauls: flatfish vs benthos
+#    (YEAR, Strato/stratum, HAUL_NUMBER/cala)
+# =========================
+
+# ---- Flatfish keys ----
+meta_fish_key <- meta_fish %>%
+  mutate(
+    YEAR        = as.numeric(YEAR),
+    Strato      = as.character(Strato),
+    HAUL_NUMBER = as.character(HAUL_NUMBER),
+    key         = paste(YEAR, Strato, HAUL_NUMBER, sep = "_")
+  )
+
+# ---- Benthos keys ----
+meta_benthos_key <- meta_benthos %>%
+  mutate(
+    YEAR        = as.numeric(str_extract(suvey, "\\d{4}")),  # extract year from "MEDITS_2024" etc.
+    Strato      = as.character(stratum),
+    HAUL_NUMBER = as.character(cala),
+    key         = paste(YEAR, Strato, HAUL_NUMBER, sep = "_")
+  )
+
+# Keys in common
+common_keys <- intersect(meta_fish_key$key, meta_benthos_key$key)
+length(common_keys)
+
+# Matching indices (preserve common_keys order)
+idx_fish    <- match(common_keys, meta_fish_key$key)
+idx_benthos <- match(common_keys, meta_benthos_key$key)
+
+# Subset + aligned order
+comm_fish_common    <- comm_fish_scaled[idx_fish, ]
+comm_benthos_common <- comm_benthos_scaled[idx_benthos, ]
+meta_common         <- meta_fish_key[idx_fish, ]  # keep YEAR/Strato/HAUL_NUMBER/key
+
+# =========================
+# 18) Flatfish PCoA on common hauls + PERMANOVA
+# =========================
+bray_fish_common <- vegdist(comm_fish_common, method = "bray")
+
+pcoa_fish_common <- cmdscale(bray_fish_common, eig = TRUE, k = 2)
+
+pcoa_scores_common <- as.data.frame(pcoa_fish_common$points[, 1:2])
+colnames(pcoa_scores_common) <- c("PCoA1", "PCoA2")
+
+eig_vals_common <- pcoa_fish_common$eig
+rel_eig_common  <- eig_vals_common[eig_vals_common > 0] / sum(eig_vals_common[eig_vals_common > 0])
+
+perm_stratum_common <- adonis2(
+  bray_fish_common ~ Strato,
+  data = meta_common,
+  permutations = 10000
+)
+
+perm_stratum_common
+
+# =========================
+# 19) envfit: benthos subcats onto flatfish ordination
+# =========================
+fit_env_benthos <- envfit(
+  pcoa_scores_common,     # flatfish ordination scores
+  comm_benthos_common,    # benthos matrix (subcats)
+  permutations = 999
+)
+
+fit_env_benthos
+
+# Build PCoA dataframe + metadata for plotting
+pcoa_df_common <- bind_cols(
+  meta_common %>% select(YEAR, Strato, HAUL_NUMBER, key),
+  pcoa_scores_common
+)
+
+pcoa_df_common$Strato <- as.factor(pcoa_df_common$Strato)
+
+# Plot base (common hauls) without centroids
+p_pcoa_fish_common_nocentroid <- ggplot(pcoa_df_common, aes(x = PCoA1, y = PCoA2)) +
+  geom_point(aes(shape = Strato, colour = Strato), size = 3) +
+  scale_shape_manual(values = shape_vals) +
+  scale_colour_grey(start = 0.2, end = 0.8) +
+  coord_equal() +
+  theme_classic() +
+  labs(
+    x = paste0("PCoA1 (", round(rel_eig_common[1] * 100, 1), "%)"),
+    y = paste0("PCoA2 (", round(rel_eig_common[2] * 100, 1), "%)"),
+    shape = "Stratum",
+    colour = "Stratum"
+  ) +
+  theme(
+    panel.border = element_blank(),
+    panel.grid   = element_blank(),
+    axis.line    = element_line(colour = "black"),
+    axis.ticks   = element_line(colour = "black"),
+    legend.position = "right"
+  )
+
+p_pcoa_fish_common_nocentroid
+
+# Optional export
+out_dir <- "C:/FISHMED_MEDITS/PaPeR"
+ggsave(
+  filename = file.path(out_dir, "PCoA_flatfish_common_nocentroid.png"),
+  plot = p_pcoa_fish_common_nocentroid,
+  width = 8, height = 6, dpi = 300
+)
+
+# =========================
+# 20) Plot envfit arrows (benthos) on flatfish PCoA
+# =========================
+arrow_benthos_df <- as.data.frame(fit_env_benthos$vectors$arrows[, 1:2])
+colnames(arrow_benthos_df) <- c("PCoA1", "PCoA2")
+arrow_benthos_df$label <- rownames(arrow_benthos_df)
+arrow_benthos_df$r2    <- fit_env_benthos$vectors$r
+
+# Keep only "important" vectors (tune threshold)
+arrow_benthos_sel <- arrow_benthos_df %>%
+  filter(r2 >= 0.05)
+
+# Scale arrows to match ordination plot space
+x_range <- range(pcoa_df_common$PCoA1, na.rm = TRUE)
+y_range <- range(pcoa_df_common$PCoA2, na.rm = TRUE)
+mult <- 0.8 * min(diff(x_range), diff(y_range))
+
+arrow_benthos_sel <- arrow_benthos_sel %>%
+  mutate(
+    PCoA1_scaled = PCoA1 * mult,
+    PCoA2_scaled = PCoA2 * mult
+  )
+
+p_pcoa_envfit_benthos <- ggplot(pcoa_df_common,
+                               aes(x = PCoA1, y = PCoA2, shape = Strato, colour = Strato)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = shape_vals) +
+  scale_colour_grey(start = 0.2, end = 0.8) +
+  coord_equal() +
+  geom_segment(
+    data = arrow_benthos_sel,
+    aes(x = 0, y = 0, xend = PCoA1_scaled, yend = PCoA2_scaled),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.2, "cm")),
+    linewidth = 0.6,
+    colour = "red"
+  ) +
+  geom_text(
+    data = arrow_benthos_sel,
+    aes(x = PCoA1_scaled, y = PCoA2_scaled, label = label),
+    inherit.aes = FALSE,
+    colour = "red",
+    vjust = -0.3,
+    size = 3
+  ) +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  labs(
+    x = paste0("PCoA1 (", round(rel_eig_common[1] * 100, 1), "%)"),
+    y = paste0("PCoA2 (", round(rel_eig_common[2] * 100, 1), "%)"),
+    shape = "Stratum",
+    colour = "Stratum"
+  )
+
+p_pcoa_envfit_benthos
+
+# =========================
+# 21) envfit also for flatfish species on the same ordination
+# =========================
+fit_env_flatfish <- envfit(
+  pcoa_scores_common,
+  comm_fish_common,
+  permutations = 999
+)
+
+fit_env_flatfish
+
+arrow_fish_df <- as.data.frame(fit_env_flatfish$vectors$arrows[, 1:2])
+colnames(arrow_fish_df) <- c("PCoA1", "PCoA2")
+arrow_fish_df$label <- rownames(arrow_fish_df)
+arrow_fish_df$r2    <- fit_env_flatfish$vectors$r
+
+# Keep only "important" species vectors (tune threshold)
+arrow_fish_sel <- arrow_fish_df %>%
+  filter(r2 >= 0.30) %>%
+  mutate(
+    PCoA1_scaled = PCoA1 * mult,
+    PCoA2_scaled = PCoA2 * mult
+  )
+
+# Combined plot: benthos (red) + flatfish (blue)
+p_pcoa_envfit_all <- ggplot(pcoa_df_common,
+                            aes(x = PCoA1, y = PCoA2, shape = Strato, colour = Strato)) +
+  geom_point(size = 3) +
+  scale_shape_manual(values = shape_vals) +
+  scale_colour_grey(start = 0.2, end = 0.8) +
+  coord_equal() +
+  # Benthos arrows (red)
+  geom_segment(
+    data = arrow_benthos_sel,
+    aes(x = 0, y = 0, xend = PCoA1_scaled, yend = PCoA2_scaled),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.2, "cm")),
+    linewidth = 0.6,
+    colour = "red"
+  ) +
+  geom_text_repel(
+    data = arrow_benthos_sel,
+    aes(x = PCoA1_scaled, y = PCoA2_scaled, label = label),
+    inherit.aes = FALSE,
+    colour = "red",
+    size = 3,
+    min.segment.length = 0
+  ) +
+  # Flatfish arrows (blue)
+  geom_segment(
+    data = arrow_fish_sel,
+    aes(x = 0, y = 0, xend = PCoA1_scaled, yend = PCoA2_scaled),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.2, "cm")),
+    linewidth = 0.6,
+    colour = "blue"
+  ) +
+  geom_text_repel(
+    data = arrow_fish_sel,
+    aes(x = PCoA1_scaled, y = PCoA2_scaled, label = label),
+    inherit.aes = FALSE,
+    colour = "blue",
+    size = 3,
+    min.segment.length = 0
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(colour = "black"),
+    axis.ticks = element_line(colour = "black")
+  ) +
+  labs(
+    x = paste0("PCoA1 (", round(rel_eig_common[1] * 100, 1), "%)"),
+    y = paste0("PCoA2 (", round(rel_eig_common[2] * 100, 1), "%)"),
+    shape = "Stratum",
+    colour = "Stratum"
+  )
+
+p_pcoa_envfit_all
+
+# =========================
+# 22) Join panels A & B with a shared legend
+# =========================
+pA <- p_pcoa_fish_common_nocentroid +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = -0.2)) +
+  ggtitle("A")
+
+pB <- p_pcoa_envfit_all +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = -0.2)) +
+  ggtitle("B")
+
+g_legend <- cowplot::get_legend(
+  p_pcoa_envfit_all +
+    guides(shape = guide_legend(ncol = 1)) +
+    theme(legend.position = "right")
+)
+
+plot_joined <- (pA | pB | wrap_elements(g_legend)) +
+  plot_layout(widths = c(1, 1, 0.28))
+
+plot_joined
+
+ggsave(
+  filename = file.path(out_dir, "PCoA_joined_AB.png"),
+  plot = plot_joined,
+  width = 15, height = 6, dpi = 300
+)
+
+message("Joined figure saved in: ", out_dir)
+
+# =========================
+# 23) Add substrate + temperature to PCoA dataframe and compute centroids
+# =========================
+
+# Substrate table: one row per haul key
+meta_substrate <- benthos_agg_sub %>%
+  mutate(
+    YEAR        = as.numeric(str_extract(suvey, "\\d{4}")),
+    Strato      = as.character(stratum),
+    HAUL_NUMBER = as.character(cala),
+    key         = paste(YEAR, Strato, HAUL_NUMBER, sep = "_")
+  ) %>%
+  distinct(key, folk_7cl_t)
+
+# Join substrate + clean labels (remove numeric prefix like "1. ")
+pcoa_df_common_sub <- pcoa_df_common %>%
+  left_join(meta_substrate, by = "key") %>%
+  mutate(
+    substrato = folk_7cl_t %>%
+      str_replace("^\\d+\\.\\s*", "") %>%
+      factor()
+  )
+
+# Temperature table: one row per key
+meta_temp <- meta_benthos %>%
+  mutate(
+    YEAR        = as.numeric(str_extract(suvey, "\\d{4}")),
+    Strato      = as.character(stratum),
+    HAUL_NUMBER = as.character(cala),
+    key         = paste(YEAR, Strato, HAUL_NUMBER, sep = "_")
+  ) %>%
+  distinct(key, temperature)
+
+pcoa_df_common_sub <- pcoa_df_common_sub %>%
+  left_join(meta_temp, by = "key")
+
+# Centroids by substrate
+centroidi_sub <- pcoa_df_common_sub %>%
+  group_by(substrato) %>%
+  summarise(
+    cx = mean(PCoA1, na.rm = TRUE),
+    cy = mean(PCoA2, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label_code = recode(
+      as.character(substrato),
+      "Mud"        = "M",
+      "sandy Mud"  = "SM",
+      "muddy Sand" = "MS",
+      "Sand"       = "S",
+      .default     = as.character(substrato)
+    )
+  )
+
+# =========================
+# 24) envfit for temperature (as a vector)
+# =========================
+fit_temp <- envfit(
+  pcoa_scores_common,
+  pcoa_df_common_sub$temperature,
+  permutations = 999,
+  na.rm = TRUE
+)
+
+vec_temp <- as.numeric(fit_temp$vectors$arrows)
+
+arrow_temp <- tibble(
+  PCoA1 = vec_temp[1],
+  PCoA2 = vec_temp[2],
+  r2    = as.numeric(fit_temp$vectors$r),
+  label = "T°"
+)
+
+# Scale temp arrow to a reasonable length
+x_range2 <- range(pcoa_df_common_sub$PCoA1, na.rm = TRUE)
+y_range2 <- range(pcoa_df_common_sub$PCoA2, na.rm = TRUE)
+
+max_arrow <- sqrt(arrow_temp$PCoA1^2 + arrow_temp$PCoA2^2)
+ord_span  <- min(diff(x_range2), diff(y_range2))
+mult_temp <- 0.5 * ord_span / max_arrow
+
+arrow_temp <- arrow_temp %>%
+  mutate(
+    PCoA1_scaled = PCoA1 * mult_temp,
+    PCoA2_scaled = PCoA2 * mult_temp
+  )
+
+# =========================
+# 25) Final plot: points + fish/benthos arrows + substrate centroids + temp arrow
+# =========================
+fig_A <- p_pcoa_envfit_all +
+  # Substrate centroids
+  geom_point(
+    data = centroidi_sub,
+    aes(x = cx, y = cy),
+    inherit.aes = FALSE,
+    shape = 16,
+    size = 4.5,
+    colour = "#CC79A7"
+  ) +
+  # Temperature arrow
+  geom_segment(
+    data = arrow_temp,
+    aes(x = 0, y = 0, xend = PCoA1_scaled, yend = PCoA2_scaled),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.25, "cm")),
+    linewidth = 0.9,
+    colour = "darkorange3"
+  )
+
+fig_A
+
+# =========================
+# 26) PERMANOVA snippet (as requested)
+# =========================
+perm_stratum <- adonis2(
+  bray_fish_common ~ Strato,
+  data = meta_common,
+  permutations = 10000
+)
+
+perm_stratum
