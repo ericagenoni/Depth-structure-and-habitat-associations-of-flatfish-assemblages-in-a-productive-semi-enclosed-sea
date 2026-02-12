@@ -124,15 +124,21 @@ df_framework_A <- df_clean %>%
 df_framework_A
 
 ## ---- Save Framework A to the existing Excel (robust) ----
-wb <- wb_load(xlsx_path)
 
-sheet_out <- "framework_A"
-if (sheet_out %in% wb$sheet_names) {
-  wb$remove_worksheet(sheet_out)
-}
-wb$add_worksheet(sheet_out)
-wb$add_data(sheet_out, df_framework_A)
-wb$save(xlsx_path)
+out_file <- file.path(out_dir, "MEDITS_1994_2024_FrameworkA.xlsx")
+
+wb_out <- wb_workbook()
+
+wb_out <- wb_add_worksheet(wb_out, "Framework_A")
+
+wb_out <- wb_add_data(
+  wb_out,
+  sheet = "Framework_A",
+  x = df_framework_A
+)
+
+wb_save(wb_out, out_file, overwrite = TRUE)
+
 
 ## ---- Build community matrix: samples = YEAR x Stratum ----
 mat_num <- df_framework_A %>%
