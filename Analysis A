@@ -36,7 +36,7 @@ sort(unique(na.omit(df$YEAR)))
 sort(unique(na.omit(df$SPECIES)))
 
 ## ---- Filter years ----
-years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2014, 2017)
+years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2014, 2017)
 
 df_filt <- df %>%
   filter(!YEAR %in% years_to_drop)
