@@ -1,14 +1,34 @@
 ############################################################
-## MEDITS community workflow (Framework A)
-## - Filtering years/species/stratum
-## - Species occurrence frequency
-## - Community matrix, Bray-Curtis, PCoA
-## - PERMANOVA, beta-dispersion, pairwise PERMANOVA
-## - envfit vectors overlay
-## - Indicator Species Analysis (IndVal.g)
+## MEDITS community workflow (Framework: Overall flatfish assemblage composition by stratum)
+## Community structure by year × depth stratum
+##
+## Contents
+## 1. Load packages
+## 2. Set paths and import data
+## 3. Initial checks
+## 4. Filter years
+## 5. Species occurrence frequency
+## 6. Remove non-informative species codes and unwanted stratum
+## 7. Recalculate occurrence frequency after cleaning
+## 8. Build Framework A table (YEAR × Strato × SPECIES)
+## 9. Save Framework A to Excel
+## 10. Build community matrix
+## 11. Transform data and compute Bray-Curtis dissimilarity
+## 12. PCoA ordination
+## 13. PERMANOVA
+## 14. PERMANOVA diagnostic checks
+## 15. Beta-dispersion
+## 16. Pairwise PERMANOVA among strata
+## 17. envfit species vectors
+## 18. Indicator Species Analysis (IndVal.g)
+## 19. Stacked bar plot of species composition
 ############################################################
 
-## ---- Packages (load once) ----
+
+## =========================================================
+## 1. Load packages
+## =========================================================
+
 library(readxl)
 library(dplyr)
 library(tidyr)
@@ -19,39 +39,68 @@ library(ggrepel)
 library(grid)
 library(indicspecies)
 
-set.seed(123)  # reproducibility for permutation-based procedures
+set.seed(123)  # Reproducibility for permutation-based analyses
 
-## ---- File path ----
+
+## =========================================================
+## 2. Set paths and import data
+## =========================================================
+
 xlsx_path <- "C:/FISHMED_MEDITS/PaPeR/MEDITS_1994_2024_joined.xlsx"
 out_dir   <- "C:/FISHMED_MEDITS/PaPeR"
 
-## ---- Read data ----
+# Read the first sheet in the workbook.
+# If needed, replace sheets[1] with an explicit sheet name.
 sheets <- excel_sheets(xlsx_path)
-sheet_name <- sheets[1]   # or set explicitly, e.g. "ALL_joined"
+sheet_name <- sheets[1]
+
 df <- read_excel(xlsx_path, sheet = sheet_name)
 
-## Quick checks
+
+## =========================================================
+## 3. Initial checks
+## =========================================================
+
+# Column names
 names(df)
+
+# Available years
 sort(unique(na.omit(df$YEAR)))
+
+# Available species codes
 sort(unique(na.omit(df$SPECIES)))
 
-## ---- Filter years ----
+
+## =========================================================
+## 4. Filter years
+## =========================================================
+
+# Years excluded from the time series
 years_to_drop <- c(1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2014, 2017)
 
 df_filt <- df %>%
   filter(!YEAR %in% years_to_drop)
 
+# Check retained years
 years_unique_filtered <- sort(unique(df_filt$YEAR))
 years_unique_filtered
 
-## ---- Species occurrence frequency (before removing codes) ----
+
+## =========================================================
+## 5. Species occurrence frequency
+## =========================================================
+
+# Occurrence frequency is calculated as the percentage of years
+# in which each species is present with TOTAL_NUMBER_IN_THE_HAUL > 0.
+
 n_years_total <- n_distinct(df_filt$YEAR)
 
 freq_species <- df_filt %>%
   group_by(SPECIES) %>%
   summarise(
-    years_present = n_distinct(YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) &
-                                      TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    years_present = n_distinct(
+      YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) & TOTAL_NUMBER_IN_THE_HAUL > 0]
+    ),
     freq_percent = 100 * years_present / n_years_total,
     .groups = "drop"
   ) %>%
@@ -59,12 +108,14 @@ freq_species <- df_filt %>%
 
 print(freq_species, n = 40)
 
-## Plot frequency
-freq_species$SPECIES <- factor(freq_species$SPECIES,
-                               levels = freq_species$SPECIES[order(freq_species$freq_percent,
-                                                                  decreasing = TRUE)])
+# Order species by frequency for plotting
+freq_species$SPECIES <- factor(
+  freq_species$SPECIES,
+  levels = freq_species$SPECIES[order(freq_species$freq_percent, decreasing = TRUE)]
+)
 
-ggplot(freq_species, aes(x = SPECIES, y = freq_percent)) +
+# Plot species frequency of occurrence
+p_freq <- ggplot(freq_species, aes(x = SPECIES, y = freq_percent)) +
   geom_col() +
   coord_flip() +
   geom_hline(yintercept = 50, linetype = "dashed", colour = "red") +
@@ -75,33 +126,53 @@ ggplot(freq_species, aes(x = SPECIES, y = freq_percent)) +
   ) +
   theme_bw()
 
-## ---- Remove non-informative codes + drop stratum 21110 ----
+p_freq
+
+ggsave(
+  file.path(out_dir, "Species_frequency_occurrence.png"),
+  p_freq, width = 7, height = 6, dpi = 300
+)
+
+
+## =========================================================
+## 6. Remove non-informative species codes and unwanted stratum
+## =========================================================
+
+# Codes removed because they do not represent informative taxonomic units
 species_to_drop <- c("LAS", "SPP", "ACU", "IMP", "POD", "TEN", "TYP", "OCE")
 
 df_clean <- df_filt %>%
   filter(!SPECIES %in% species_to_drop) %>%
   filter(Strato != 21110)
 
-## How many rows removed for stratum 21110 (from df_filt)?
+# Number of rows removed from stratum 21110
 n_21110 <- df_filt %>%
   filter(Strato == 21110) %>%
   nrow()
+
 n_21110
 
+# Species composition in stratum 21110 before removal
 df_filt %>%
   filter(Strato == 21110) %>%
   count(SPECIES)
 
+# Remaining number of rows after cleaning
 nrow(df_clean)
 
-## ---- Updated frequency after cleaning ----
+
+## =========================================================
+## 7. Recalculate occurrence frequency after cleaning
+## =========================================================
+
 n_years_total2 <- n_distinct(df_clean$YEAR)
 
 freq_species2 <- df_clean %>%
   group_by(SPECIES) %>%
   summarise(
-    years_present = n_distinct(YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) &
-                                      TOTAL_NUMBER_IN_THE_HAUL > 0]),
+    years_present = n_distinct(
+      YEAR[!is.na(TOTAL_NUMBER_IN_THE_HAUL) & TOTAL_NUMBER_IN_THE_HAUL > 0]
+    ),
     freq_percent = 100 * years_present / n_years_total2,
     .groups = "drop"
   ) %>%
@@ -109,7 +180,17 @@ freq_species2 <- df_clean %>%
 
 print(freq_species2, n = nrow(freq_species2))
 
-## ---- Framework A: aggregate to YEAR x Stratum x SPECIES ----
+
+## =========================================================
+## 8. Build Framework A table (YEAR × Strato × SPECIES)
+## =========================================================
+
+# Framework A aggregates the data at the level of:
+# YEAR × depth stratum × species.
+#
+# For each combination, mean weight and mean number per haul are calculated,
+# together with the number of hauls contributing to the average.
+
 df_framework_A <- df_clean %>%
   group_by(YEAR, Strato, SPECIES) %>%
   summarise(
@@ -123,24 +204,28 @@ df_framework_A <- df_clean %>%
 
 df_framework_A
 
-## ---- Save Framework A to the existing Excel (robust) ----
+
+## =========================================================
+## 9. Save Framework A to Excel
+## =========================================================
 
 out_file <- file.path(out_dir, "MEDITS_1994_2024_FrameworkA.xlsx")
 
 wb_out <- wb_workbook()
-
 wb_out <- wb_add_worksheet(wb_out, "Framework_A")
-
-wb_out <- wb_add_data(
-  wb_out,
-  sheet = "Framework_A",
-  x = df_framework_A
-)
+wb_out <- wb_add_data(wb_out, sheet = "Framework_A", x = df_framework_A)
 
 wb_save(wb_out, out_file, overwrite = TRUE)
 
 
-## ---- Build community matrix: samples = YEAR x Stratum ----
+## =========================================================
+## 10. Build community matrix
+## =========================================================
+
+# Samples = YEAR × Strato
+# Variables = species
+# Values = mean number per haul
+
 mat_num <- df_framework_A %>%
   select(YEAR, Strato, SPECIES, mean_number) %>%
   pivot_wider(
@@ -149,30 +234,63 @@ mat_num <- df_framework_A %>%
     values_fill = 0
   )
 
+# Metadata table
 metadata <- mat_num %>% select(YEAR, Strato)
+
+# Community matrix only
 mat <- mat_num %>% select(-YEAR, -Strato)
 
-## ---- Transformations and Bray-Curtis ----
-mat_sqrt4 <- mat^(1/4)
-mat_std   <- decostand(mat_sqrt4, method = "range")
+
+## =========================================================
+## 11. Transform data and compute Bray-Curtis dissimilarity
+## =========================================================
+
+# A fourth-root transformation is applied to reduce dominance
+# while preserving abundance structure.
+# Bray-Curtis dissimilarity is then calculated on the transformed matrix.
+
+mat_std <- mat^(1/4)
 
 bray <- vegdist(mat_std, method = "bray")
 
-## ---- PCoA ----
+
+## =========================================================
+## 12. PCoA ordination
+## =========================================================
+
+# Principal Coordinates Analysis is run on the Bray-Curtis matrix.
+# Eigenvalues are inspected because negative eigenvalues can occur
+# with non-Euclidean dissimilarities such as Bray-Curtis.
+
 pcoa_res <- cmdscale(bray, eig = TRUE, k = 2)
-var_exp <- round(100 * pcoa_res$eig / sum(pcoa_res$eig), 1)
+
+# Diagnostic checks on eigenvalues
+min(pcoa_res$eig)
+sum(pcoa_res$eig < 0)
+sum(pcoa_res$eig[pcoa_res$eig > 0]) / sum(abs(pcoa_res$eig))
+
+eig <- pcoa_res$eig
+eig_pos <- eig[eig > 0]
+
+# Percentage explained is expressed relative to positive eigenvalues only.
+var_exp <- round(100 * eig / sum(eig_pos), 1)
 
 pcoa_df <- data.frame(
   PCoA1  = pcoa_res$points[, 1],
   PCoA2  = pcoa_res$points[, 2],
+  YEAR   = metadata$YEAR,
   Strato = as.factor(metadata$Strato)
 )
 
 shape_vals <- c(16, 17, 15, 3, 7, 8)
 
 p_pcoa <- ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2, shape = Strato)) +
-  stat_ellipse(aes(group = Strato),
-               color = "black", linewidth = 0.4, show.legend = FALSE) +
+  stat_ellipse(
+    aes(group = Strato),
+    color = "black",
+    linewidth = 0.4,
+    show.legend = FALSE
+  ) +
   geom_point(color = "black", size = 3) +
   scale_shape_manual(values = shape_vals) +
   labs(
@@ -184,18 +302,91 @@ p_pcoa <- ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2, shape = Strato)) +
   theme(legend.position = "right")
 
 p_pcoa
-ggsave(file.path(out_dir, "PCoA_framework_A.png"), p_pcoa, width = 7, height = 5)
 
-## ---- PERMANOVA ----
+ggsave(
+  file.path(out_dir, "PCoA_framework_A.png"),
+  p_pcoa, width = 7, height = 5, dpi = 300
+)
+
+
+## =========================================================
+## 13. PERMANOVA
+## =========================================================
+
+# The effect of depth stratum on community composition is tested
+# using PERMANOVA on the Bray-Curtis dissimilarity matrix.
+
 metadata$Strato <- as.factor(metadata$Strato)
 
-perm_strato <- adonis2(bray ~ Strato,
-                       data = metadata,
-                       permutations = 10000,
-                       by = "margin")
+perm_strato <- adonis2(
+  bray ~ Strato,
+  data = metadata,
+  permutations = 10000,
+  by = "margin"
+)
+
 perm_strato
 
-## ---- Beta-dispersion ----
+
+## =========================================================
+## 14. PERMANOVA diagnostic checks
+## =========================================================
+
+# These checks help interpret PERMANOVA more carefully.
+# A significant PERMANOVA can reflect either:
+# 1. differences in multivariate centroids among groups
+# 2. differences in within-group dispersion
+#
+# For this reason, beta-dispersion is evaluated below.
+#
+# Additional control summaries are produced here to document
+# sample balance and group structure.
+
+# Number of samples per stratum
+sample_size_by_stratum <- metadata %>%
+  count(Strato, name = "n_samples")
+
+sample_size_by_stratum
+
+# Number of YEAR × Strato samples per year
+sample_size_by_year <- metadata %>%
+  count(YEAR, Strato, name = "n_samples")
+
+sample_size_by_year
+
+# Mean distance to centroid from betadisper will be added after running betadisper.
+# A compact table of PERMANOVA results is also saved.
+
+perm_table <- as.data.frame(perm_strato)
+perm_table$term <- rownames(perm_table)
+perm_table
+
+write.csv(
+  perm_table,
+  file.path(out_dir, "PERMANOVA_results.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  sample_size_by_stratum,
+  file.path(out_dir, "Sample_size_by_stratum.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  sample_size_by_year,
+  file.path(out_dir, "Sample_size_by_year_and_stratum.csv"),
+  row.names = FALSE
+)
+
+
+## =========================================================
+## 15. Beta-dispersion
+## =========================================================
+
+# Homogeneity of multivariate dispersion is assessed with betadisper.
+# This is the standard diagnostic complement to PERMANOVA.
+
 beta_disp <- betadisper(bray, metadata$Strato)
 beta_perm <- permutest(beta_disp, permutations = 10000, pairwise = TRUE)
 
@@ -203,9 +394,65 @@ beta_disp
 beta_perm
 beta_perm$pairwise
 
+# Distances to group centroids
+dispersion_distances <- data.frame(
+  sample  = seq_along(beta_disp$distances),
+  YEAR    = metadata$YEAR,
+  Strato  = metadata$Strato,
+  dist_to_centroid = beta_disp$distances
+)
+
+dispersion_summary <- dispersion_distances %>%
+  group_by(Strato) %>%
+  summarise(
+    n = n(),
+    mean_distance = mean(dist_to_centroid, na.rm = TRUE),
+    sd_distance   = sd(dist_to_centroid, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+dispersion_summary
+
+write.csv(
+  dispersion_distances,
+  file.path(out_dir, "Beta_dispersion_distances_by_sample.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  dispersion_summary,
+  file.path(out_dir, "Beta_dispersion_summary_by_stratum.csv"),
+  row.names = FALSE
+)
+
+# Plot beta-dispersion
 plot(beta_disp, hull = TRUE, ellipse = TRUE)
 
-## ---- Pairwise PERMANOVA between strata ----
+# Boxplot of distance to centroid by stratum
+p_disp <- ggplot(dispersion_distances, aes(x = Strato, y = dist_to_centroid)) +
+  geom_boxplot() +
+  labs(
+    x = "Depth stratum",
+    y = "Distance to centroid",
+    title = "Multivariate dispersion by stratum"
+  ) +
+  theme_bw()
+
+p_disp
+
+ggsave(
+  file.path(out_dir, "Beta_dispersion_boxplot.png"),
+  p_disp, width = 7, height = 5, dpi = 300
+)
+
+
+## =========================================================
+## 16. Pairwise PERMANOVA among strata
+## =========================================================
+
+# Pairwise tests are run between all combinations of strata.
+# Benjamini-Hochberg correction is applied to account for multiple testing.
+
 strata <- levels(metadata$Strato)
 bray_mat <- as.matrix(bray)
 
@@ -223,12 +470,17 @@ for (i in 1:(length(strata) - 1)) {
 
     s1 <- strata[i]
     s2 <- strata[j]
+
     sel <- metadata$Strato %in% c(s1, s2)
 
     bray_sub <- as.dist(bray_mat[sel, sel])
     meta_sub <- data.frame(Strato = droplevels(metadata$Strato[sel]))
 
-    tmp <- adonis2(bray_sub ~ Strato, data = meta_sub, permutations = 10000)
+    tmp <- adonis2(
+      bray_sub ~ Strato,
+      data = meta_sub,
+      permutations = 10000
+    )
 
     pair_perm <- rbind(
       pair_perm,
@@ -244,13 +496,26 @@ for (i in 1:(length(strata) - 1)) {
   }
 }
 
-## Optional: multiple-testing correction (recommended)
 pair_perm$p_adj_bh <- p.adjust(pair_perm$p, method = "BH")
 
 pair_perm
 
-## ---- envfit vectors on PCoA (descriptive: no permutations) ----
-ef <- envfit(pcoa_res$points, mat_std, permutations = 0)
+write.csv(
+  pair_perm,
+  file.path(out_dir, "Pairwise_PERMANOVA_strata.csv"),
+  row.names = FALSE
+)
+
+
+## =========================================================
+## 17. envfit species vectors
+## =========================================================
+
+# envfit is used here to project species vectors onto the ordination.
+# Permutations are included, allowing significance assessment.
+# Vectors are filtered graphically using an r² threshold.
+
+ef <- envfit(pcoa_res$points, mat_std, permutations = 1000)
 vec <- scores(ef, display = "vectors")
 
 xlim_pcoa <- range(pcoa_df$PCoA1)
@@ -272,9 +537,19 @@ arrows_df <- data.frame(
   species = rownames(vec_scaled),
   PCoA1   = vec_scaled[, 1],
   PCoA2   = vec_scaled[, 2],
-  r2      = ef$vectors$r
+  r2      = ef$vectors$r,
+  pval    = ef$vectors$pvals
 )
 
+arrows_df
+
+write.csv(
+  arrows_df,
+  file.path(out_dir, "Envfit_vectors_all_species.csv"),
+  row.names = FALSE
+)
+
+# Filtering criterion for display
 r2_threshold <- 0.48
 arrows_df_filt <- arrows_df[arrows_df$r2 >= r2_threshold, ]
 
@@ -283,43 +558,73 @@ p_pcoa_envfit <- p_pcoa +
     data = arrows_df_filt,
     aes(x = 0, y = 0, xend = PCoA1, yend = PCoA2),
     colour = "blue",
-    size   = 0.6,
-    arrow  = arrow(length = unit(0.25, "cm"), type = "closed"),
+    linewidth = 0.6,
+    arrow = arrow(length = unit(0.25, "cm"), type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  ggrepel::geom_text_repel(
+    data = arrows_df_filt,
+    aes(x = PCoA1, y = PCoA2, label = species),
+    colour = "blue",
+    size = 3.5,
     inherit.aes = FALSE
   )
 
 p_pcoa_envfit
-ggsave(file.path(out_dir, "PCoA_framework_A_envfit_flatfish.png"),
-       p_pcoa_envfit, width = 7, height = 5, dpi = 300)
 
-## ---- Indicator Species Analysis (IndVal.g) ----
+ggsave(
+  file.path(out_dir, "PCoA_framework_A_envfit.png"),
+  p_pcoa_envfit, width = 7, height = 5, dpi = 300
+)
+
+summary(ef)
+
+
+## =========================================================
+## 18. Indicator Species Analysis (IndVal.g)
+## =========================================================
+
+# The community matrix used for indicator analysis is the same one
+# used for ordination and PERMANOVA, ensuring analytical consistency.
+
 groups <- as.factor(metadata$Strato)
-comm <- mat_std   # keep consistent with ordination inputs (as in your script)
+comm   <- mat_std
 
-isa_res <- multipatt(comm, groups,
-                     func = "IndVal.g",
-                     control = how(nperm = 10000))
+# Species associated with single groups
+isa_res <- multipatt(
+  comm, groups,
+  func = "IndVal.g",
+  control = how(nperm = 10000)
+)
+
 summary(isa_res, indvalcomp = TRUE)
 
-isa_res2 <- multipatt(comm, groups,
-                      func = "IndVal.g",
-                      max.order = 2,
-                      control = how(nperm = 10000))
+# Species associated with combinations of up to two groups
+isa_res2 <- multipatt(
+  comm, groups,
+  func = "IndVal.g",
+  max.order = 2,
+  control = how(nperm = 10000)
+)
+
 summary(isa_res2, indvalcomp = TRUE)
 
 
-############################################
-# STACKED BARPLOT (% composition) on RAW means
-# 1) Aggregate: YEAR × Strato × SPECIES (mean abundance)
-# 2) Aggregate across years: Strato × SPECIES (sum of annual means)
-# 3) Convert to % within each Strato (0–100; sum = 100)
-# 4) Order species by overall composition (dominant species at bottom)
-# 5) Stacked plot (ylim 0–100 without dropping levels/rows)
-############################################
+## =========================================================
+## 19. Stacked bar plot of species composition
+## =========================================================
 
-## Note: uses df_clean (already created above)
+# This section summarizes species composition by depth stratum.
+# Percentages are calculated from raw mean abundance values.
+#
+# Workflow:
+# 1. YEAR × Strato × SPECIES mean abundance
+# 2. Sum across years within each stratum
+# 3. Convert to percentage composition within stratum
+# 4. Order species by overall contribution
+# 5. Plot stacked bars
 
-# ---- Palette (user-defined) ----
+# User-defined palette
 pal_species <- c(
   "BOS" = "#1F78B4",
   "FLE" = "#FF7F00",
@@ -339,7 +644,7 @@ pal_species <- c(
   "WHS" = "#525252"
 )
 
-# 1) YEAR × Strato × SPECIES: raw mean number per haul
+# 1. YEAR × Strato × SPECIES mean abundance
 df_yss <- df_clean %>%
   group_by(YEAR, Strato, SPECIES) %>%
   summarise(
@@ -347,7 +652,7 @@ df_yss <- df_clean %>%
     .groups = "drop"
   )
 
-# 2) Across years: Strato × SPECIES (sum of annual means)
+# 2. Sum across years within stratum
 stab_raw <- df_yss %>%
   group_by(Strato, SPECIES) %>%
   summarise(
@@ -355,7 +660,7 @@ stab_raw <- df_yss %>%
     .groups = "drop"
   )
 
-# 3) % within Strato (robust even if a stratum sum is 0)
+# 3. Convert to percentage composition within each stratum
 stab_long <- stab_raw %>%
   group_by(Strato) %>%
   mutate(
@@ -364,7 +669,7 @@ stab_long <- stab_raw %>%
   ) %>%
   ungroup()
 
-# 4) Species order by overall contribution (dominant at bottom)
+# 4. Order species by total contribution across strata
 species_order <- stab_long %>%
   group_by(SPECIES) %>%
   summarise(total = sum(pct, na.rm = TRUE), .groups = "drop") %>%
@@ -374,29 +679,51 @@ species_order <- stab_long %>%
 stab_long <- stab_long %>%
   mutate(SPECIES = factor(SPECIES, levels = species_order))
 
-# 5A) Stacked plot (with legend)
-ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
+write.csv(
+  stab_long,
+  file.path(out_dir, "Stacked_barplot_composition_table.csv"),
+  row.names = FALSE
+)
+
+# 5A. Stacked bar plot with legend
+p_stack <- ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
   geom_col(color = "black", linewidth = 0.15) +
   coord_cartesian(ylim = c(0, 100)) +
   scale_fill_manual(values = pal_species, breaks = species_order, drop = FALSE) +
-  labs(x = "Stratum", y = "Composition (%)", fill = "Species") +
+  labs(
+    x = "Stratum",
+    y = "Composition (%)",
+    fill = "Species",
+    title = "Species composition by depth stratum"
+  ) +
   theme_bw() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
     panel.grid.major.x = element_blank()
   )
 
-# 5B) Stacked plot (no legend labels/title)
-p2 <- ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
+p_stack
+
+ggsave(
+  file.path(out_dir, "StackedBar_Composition_rawmeans.png"),
+  p_stack, width = 7, height = 5, dpi = 300
+)
+
+# 5B. Stacked bar plot without legend title
+p_stack_simple <- ggplot(stab_long, aes(x = factor(Strato), y = pct, fill = SPECIES)) +
   geom_col(color = "black", linewidth = 0.25) +
   coord_cartesian(ylim = c(0, 100)) +
   scale_fill_manual(values = pal_species, drop = FALSE) +
-  labs(x = "Stratum", y = "Composition (%)") +
+  labs(
+    x = "Stratum",
+    y = "Composition (%)"
+  ) +
   theme_bw() +
   theme(legend.title = element_blank())
 
-p2
-# Optional: save
-# ggsave(file.path(out_dir, "StackedBar_Composition_rawmeans.png"),
-#        p2, width = 7, height = 5, dpi = 300)
+p_stack_simple
 
+ggsave(
+  file.path(out_dir, "StackedBar_Composition_rawmeans_simple.png"),
+  p_stack_simple, width = 7, height = 5, dpi = 300
+)
