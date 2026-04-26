@@ -1,7 +1,8 @@
 ############################################################
-## MEDITS community workflow (Framework: Overall flatfish assemblage composition by stratum)
+## MEDITS community workflow
+## Overall flatfish assemblage composition by stratum
 ## Community structure by year × depth stratum
-##
+############################################################
 ## Contents
 ## 1. Load packages
 ## 2. Set paths and import data
@@ -10,8 +11,8 @@
 ## 5. Species occurrence frequency
 ## 6. Remove non-informative species codes and unwanted stratum
 ## 7. Recalculate occurrence frequency after cleaning
-## 8. Build Framework A table (YEAR × Strato × SPECIES)
-## 9. Save Framework A to Excel
+## 8. Build "Overall flatfish assemblage composition by stratum" Framework  table (YEAR × Strato × SPECIES)
+## 9. Save "Overall flatfish assemblage composition by stratum" Framework  to Excel
 ## 10. Build community matrix
 ## 11. Transform data and compute Bray-Curtis dissimilarity
 ## 12. PCoA ordination
@@ -23,7 +24,11 @@
 ## 18. Indicator Species Analysis (IndVal.g)
 ## 19. Stacked bar plot of species composition
 ############################################################
-
+## NOTE:
+## For convenience, the overall YEAR × Strato × SPECIES table
+## is referred to as "Framework A" within this script and
+## in output files. This corresponds to the analysis of
+## overall flatfish assemblage composition by stratum.
 
 ## =========================================================
 ## 1. Load packages
@@ -182,10 +187,10 @@ print(freq_species2, n = nrow(freq_species2))
 
 
 ## =========================================================
-## 8. Build Framework A table (YEAR × Strato × SPECIES)
+## 8. Build "Overall flatfish assemblage composition by stratum" Framework  table (YEAR × Strato × SPECIES)
 ## =========================================================
 
-# Framework A aggregates the data at the level of:
+# "Overall flatfish assemblage composition by stratum" aggregates the data at the level of:
 # YEAR × depth stratum × species.
 #
 # For each combination, mean weight and mean number per haul are calculated,
@@ -206,7 +211,7 @@ df_framework_A
 
 
 ## =========================================================
-## 9. Save Framework A to Excel
+## 9. Save "Overall flatfish assemblage composition by stratum" Framework  to Excel
 ## =========================================================
 
 out_file <- file.path(out_dir, "MEDITS_1994_2024_FrameworkA.xlsx")
