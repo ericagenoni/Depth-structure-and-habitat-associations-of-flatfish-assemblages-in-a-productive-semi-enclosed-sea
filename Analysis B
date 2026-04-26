@@ -1,6 +1,9 @@
+
 ############################################################
-## Framework B — Benthos (2021–2024) + Flatfish (2021, 2023, 2024)
-##
+## MEDITS community workflow
+## Flatfish habitat associations
+## Haul-level flatfish assemblages, benthos, substrate, and temperature
+############################################################
 ## Workflow
 ## 1. Load libraries
 ## 2. Define paths
@@ -25,6 +28,13 @@
 ## 21. Add substrate centroids and temperature vector
 ## 22. Procrustes and PROTEST between fish and benthos ordinations
 ############################################################
+
+## NOTE:
+## For convenience, the haul-level habitat-association dataset
+## is referred to as "Framework B" within this script and
+## in output files. This corresponds to the analysis of
+## flatfish habitat associations described in the manuscript.
+
 
 
 ## =========================================================
