@@ -555,7 +555,7 @@ write.csv(
 )
 
 # Filtering criterion for display
-r2_threshold <- 0.48
+r2_threshold <- 0.50
 arrows_df_filt <- arrows_df[arrows_df$r2 >= r2_threshold, ]
 
 p_pcoa_envfit <- p_pcoa +
